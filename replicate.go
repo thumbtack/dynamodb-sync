@@ -1,56 +1,64 @@
 package main
 
 import (
+	"github.com/thumbtack/goratelimit"
 	"sync"
 	"time"
 
-	logging "github.com/sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodbstreams"
+	logging "github.com/sirupsen/logrus"
 )
 
 const (
-	maxBatchSize                      = 25
-	streamRetentionHours              = 24 * time.Hour
-	shardEnumerateIntervalSeconds     = 30 * time.Second
-	shardWaitForParentIntervalSeconds = 5 * time.Second
-	streamEnableWaitIntervalSeconds   = 10 * time.Second
-	shardIteratorPointer              = "AFTER_SEQUENCE_NUMBER"
+	maxBatchSize               = 25
+	streamRetentionHours       = 24 * time.Hour
+	shardEnumerateInterval     = 180 * time.Second
+	shardWaitForParentInterval = 60 * time.Second
+	streamEnableWaitInterval   = 10 * time.Second
+	shardIteratorPointer       = "AFTER_SEQUENCE_NUMBER"
 )
 
-func (app *appConfig) replicate(quit <-chan bool, key primaryKey) {
+func (sync *syncState) replicate(quit <-chan bool, key primaryKey) {
 	// Check if we need to copy the table over
 	// from src to dst before processing the streams
-	if app.isFreshStart(key) {
-		// If there are any stale checkpoints/expired shards
-		// it's time to delete those from the checkpoint table
-		app.dropCheckpoint(key)
-		// reset its local `state`
-		app.state[key] = *NewStateTracker()
-		/*err := app.deleteTable(key)*/
-		app.copyTable(key)
-		app.updateCheckpointTimestamp(key)
+	if sync.isFreshStart(key) {
+		sync.checkpoint = make(map[string]string, 0)
+		sync.expiredShards = make(map[string]bool, 0)
+		sync.timestamp = time.Time{}
+
+		// Copy table start
+		sync.copyTable(key)
+
+		// Update checkpoint
+		sync.updateCheckpointTimestamp(key)
+
+		// Check if streaming is needed
+		if sync.tableConfig.EnableStreaming == false {
+			// Return after copying tables, don't move on to streaming
+			return
+		}
 	}
 	for {
 		select {
 		case <-quit:
-			app.logger.WithFields(logging.Fields{
+			logger.WithFields(logging.Fields{
 				"Source Table":      key.sourceTable,
 				"Destination Table": key.dstTable,
 			}).Info("Quitting stream syncing")
 			return
 		default:
 			// Start processing stream
-			err := app.streamSyncStart(key)
+			err := sync.streamSyncStart(key)
 			if err != nil {
-				app.logger.WithFields(logging.Fields{
+				logger.WithFields(logging.Fields{
 					"Error":             err,
 					"Source Table":      key.sourceTable,
 					"Destination Table": key.dstTable,
 				}).Error("Error in replicating streams.")
 				// Stream may not have been enabled. Wait before trying again
-				time.Sleep(time.Duration(streamEnableWaitIntervalSeconds))
+				time.Sleep(time.Duration(streamEnableWaitInterval))
 			}
 		}
 	}
@@ -63,99 +71,133 @@ func (app *appConfig) replicate(quit <-chan bool, key primaryKey) {
 // Once all the workers in the readWorker group are done,
 // we close the channel, and wait for the writeWorker group
 // to finish
-func (app *appConfig) copyTable(key primaryKey) {
-	app.logger.WithFields(logging.Fields{
+func (state *syncState) copyTable(key primaryKey) {
+	logger.WithFields(logging.Fields{
 		"Source Table":      key.sourceTable,
 		"Destination Table": key.dstTable,
 	}).Info("Copying dynamodb tables")
+
+	// Fix up the r/w capacity of src and dst tables
+	// Save the old values to reset the values once
+	// we are done copying
+	sourceCapacity := state.getCapacity(key.sourceTable, state.srcDynamo)
+	dstCapacity := state.getCapacity(key.dstTable, state.dstDynamo)
+	var isSourceThroughputChanged = false
+	var isDstThroughputChanged = false
+	srcDynamo := state.srcDynamo
+	dstDynamo := state.dstDynamo
+
+	if state.tableConfig.ReadQps > sourceCapacity.readCapacity {
+		newCapacity := provisionedThroughput{
+			state.tableConfig.ReadQps,
+			sourceCapacity.writeCapacity,
+		}
+		err := state.updateCapacity(key.sourceTable, newCapacity, srcDynamo)
+		if err != nil {
+			logger.WithFields(logging.Fields{"Table": key.sourceTable}).
+				Error("Unable to update capacity, won't proceed with copy")
+			return
+		}
+		isSourceThroughputChanged = true
+	}
+
+	if state.tableConfig.WriteQps > dstCapacity.writeCapacity {
+		newCapacity := provisionedThroughput{
+			dstCapacity.readCapacity,
+			state.tableConfig.WriteQps,
+		}
+		err := state.updateCapacity(key.dstTable, newCapacity, dstDynamo)
+		if err != nil {
+			logger.WithFields(logging.Fields{"Table": key.dstTable}).
+				Error("Unable to update capacity, won't proceed with copy")
+		}
+		isDstThroughputChanged = true
+	}
+
 	var writerWG, readerWG sync.WaitGroup
 	items := make(chan []map[string]*dynamodb.AttributeValue)
-	writeWorkers := app.sync[key].WriteWorkers
-	readWorkers := app.sync[key].ReadWorkers
+	writeWorkers := state.tableConfig.WriteWorkers
+	readWorkers := state.tableConfig.ReadWorkers
 
 	writerWG.Add(writeWorkers)
+	rlDst := goratelimit.New(state.tableConfig.WriteQps)
 	for i := 0; i < writeWorkers; i++ {
-		app.logger.WithFields(logging.Fields{
+		logger.WithFields(logging.Fields{
 			"Write Worker":      i,
 			"Source Table":      key.sourceTable,
 			"Destination Table": key.dstTable,
 		}).Debug("Starting copy table write worker..")
-		go app.writeTable(key, items, &writerWG, i)
+		go state.writeTable(key, items, &writerWG, i, *rlDst)
 	}
 	readerWG.Add(readWorkers)
 	for i := 0; i < readWorkers; i++ {
-		app.logger.WithFields(logging.Fields{
+		logger.WithFields(logging.Fields{
 			"Read Worker":       i,
 			"Source Table":      key.sourceTable,
 			"Destination Table": key.dstTable,
 		}).Debug("Starting copy table read worker..")
-		go app.readTable(key, items, &readerWG, i)
+		go state.readTable(key, items, &readerWG, i)
 	}
 
 	readerWG.Wait()
 	close(items)
 	writerWG.Wait()
 
-	app.logger.WithFields(logging.Fields{
+	logger.WithFields(logging.Fields{
 		"Source Table":      key.sourceTable,
 		"Destination Table": key.dstTable,
 	}).Info("Finished copying dynamodb tables")
+
+	// Reset table capacity to original values
+	if isSourceThroughputChanged {
+		err := state.updateCapacity(key.sourceTable, sourceCapacity, srcDynamo)
+		if err != nil {
+			logger.WithFields(logging.Fields{"Table": key.sourceTable}).
+				Error("Failed to reset capacity")
+		}
+	}
+	if isDstThroughputChanged {
+		err := state.updateCapacity(key.dstTable, dstCapacity, dstDynamo)
+		if err != nil {
+			logger.WithFields(logging.Fields{"Table": key.dstTable}).
+				Error("Failed to reset capacity")
+		}
+	}
 }
 
-func (app *appConfig) deleteTable(key primaryKey) {
-	app.logger.WithFields(logging.Fields{
+func (sync *syncState) describeTable(key primaryKey) (*dynamodb.DescribeTableOutput, error) {
+	logger.WithFields(logging.Fields{
 		"Destination Table": key.dstTable,
-	}).Info("Dropping items from stale table")
-	var writerWG, readerWG sync.WaitGroup
-	items := make(chan []map[string]*dynamodb.AttributeValue)
-	writeWorkers := app.sync[key].WriteWorkers
-	readWorkers := app.sync[key].ReadWorkers
+	}).Info("Getting table properties")
 
-	writerWG.Add(writeWorkers)
-	for i := 0; i < writeWorkers; i++ {
-		app.logger.WithFields(logging.Fields{
-			"Write Worker":      i,
-			"Destination Table": key.dstTable,
-		}).Debug("Starting delete table write worker..")
-		go app.batchDeleteItems(key, items, &writerWG, i)
-	}
-	readerWG.Add(readWorkers)
-	for i := 0; i < readWorkers; i++ {
-		app.logger.WithFields(logging.Fields{
-			"Read Worker":       i,
-			"Destination Table": key.dstTable,
-		}).Debug("Starting delete table read worker..")
-		go app.readTable(key, items, &readerWG, i)
+	input := &dynamodb.DescribeTableInput{
+		TableName: aws.String(key.dstTable),
 	}
 
-	readerWG.Wait()
-	close(items)
-	writerWG.Wait()
+	output, err := sync.dstDynamo.DescribeTable(input)
 
-	app.logger.WithFields(logging.Fields{
-		"Destination Table": key.dstTable,
-	}).Info("Finished dropping items from dynamodb table")
+	return output, err
 }
 
 // Check if the stream needs to be synced from the beginning, or
 // from a particular checkpoint
-func (app *appConfig) streamSyncStart(key primaryKey) (error) {
-	app.logger.WithFields(logging.Fields{
+func (sync *syncState) streamSyncStart(key primaryKey) error {
+	logger.WithFields(logging.Fields{
 		"Source Table":      key.sourceTable,
 		"Destination Table": key.dstTable,
 	}).Info("Starting DynamoDB Stream Sync")
 	var err error
-	streamArn, err := app.getStreamArn(key)
+	streamArn, err := sync.getStreamArn(key)
 	if err != nil {
 		return err
 	}
-	err = app.streamSync(key, streamArn)
+	err = sync.streamSync(key, streamArn)
 
 	return err
 }
 
 // Read from src stream, and write to dst table
-func (app *appConfig) streamSync(key primaryKey, streamArn string) (error) {
+func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 	var err error = nil
 	var result *dynamodbstreams.DescribeStreamOutput
 	lastEvaluatedShardId := ""
@@ -169,54 +211,58 @@ func (app *appConfig) streamSync(key primaryKey, streamArn string) (error) {
 		if lastEvaluatedShardId != "" {
 			input.ExclusiveStartShardId = aws.String(lastEvaluatedShardId)
 		}
-		maxConnectRetries := app.sync[key].MaxConnectRetries
+		maxConnectRetries := sync.tableConfig.MaxConnectRetries
 
 		for i := 0; i < maxConnectRetries; i++ {
-			result, err = app.sync[key].stream.DescribeStream(input)
+			result, err = sync.stream.DescribeStream(input)
 			if err != nil {
 				if i == maxConnectRetries-1 {
 					return err
 				}
-				app.backoff(i, "Describe Stream")
+				backoff(i, "Describe Stream")
 			} else {
 				break
 			}
 		}
 		for _, shard := range result.StreamDescription.Shards {
-			lock := app.sync[key].checkpointLock
-			lock.RLock()
-			_, ok := app.state[key].expiredShards[*shard.ShardId]
-			lock.RUnlock()
+			sync.checkpointLock.RLock()
+			_, ok := sync.expiredShards[*shard.ShardId]
+			sync.checkpointLock.RUnlock()
 			if ok {
 				// 	Case 1: Shard has been processed in an earlier run
-				app.logger.WithFields(logging.Fields{
+				logger.WithFields(logging.Fields{
 					"Source Table":      key.sourceTable,
 					"Destination Table": key.dstTable,
 					"Shard Id":          *shard.ShardId,
 				}).Debug("Shard processed in an earlier run")
 				continue
 			}
-			lock = app.sync[key].activeShardLock
-			lock.Lock()
-			_, ok = app.sync[key].activeShardProcessors[*shard.ShardId]
+
+			sync.activeShardLock.Lock()
+			_, ok = sync.activeShardProcessors[*shard.ShardId]
+			sync.activeShardLock.Unlock()
+
 			if !ok {
 				// Case 2: New shard - start processing
-				app.logger.WithFields(logging.Fields{
+				logger.WithFields(logging.Fields{
 					"Source Table":      key.sourceTable,
 					"Destination Table": key.dstTable,
 					"Shard Id":          *shard.ShardId,
 				}).Debug("Starting processor for shard")
-				go app.shardSyncStart(key, streamArn, shard)
-				app.sync[key].activeShardProcessors[*shard.ShardId] = true
+
+				sync.activeShardLock.Lock()
+				sync.activeShardProcessors[*shard.ShardId] = true
+				sync.activeShardLock.Unlock()
+
+				go sync.shardSyncStart(key, streamArn, shard)
 			} else {
 				// Case 3: Shard is currently being processed
-				app.logger.WithFields(logging.Fields{
+				logger.WithFields(logging.Fields{
 					"Source Table":      key.sourceTable,
 					"Destination Table": key.dstTable,
 					"Shard Id":          *shard.ShardId,
 				}).Debug("Shard is already being processed")
 			}
-			lock.Unlock()
 		}
 
 		if result.StreamDescription.LastEvaluatedShardId != nil {
@@ -226,12 +272,12 @@ func (app *appConfig) streamSync(key primaryKey, streamArn string) (error) {
 			// wait a few seconds before trying again
 			// This API cannot be called more than 10/s
 			lastEvaluatedShardId = ""
-			app.logger.WithFields(logging.Fields{
+			logger.WithFields(logging.Fields{
 				"Source Table":      key.sourceTable,
 				"Destination Table": key.dstTable,
-				"SleepTime":         shardEnumerateIntervalSeconds,
+				"SleepTime":         shardEnumerateInterval,
 			}).Debug("Sleeping before refreshing list of shards")
-			time.Sleep(time.Duration(shardEnumerateIntervalSeconds))
+			time.Sleep(time.Duration(shardEnumerateInterval))
 		}
 	}
 	return err

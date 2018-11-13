@@ -3,11 +3,12 @@ package main
 import (
 	"os"
 	"strconv"
-	"time"
 	"testing"
+	"time"
 
-	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
 	logging "github.com/sirupsen/logrus"
 )
 
@@ -29,9 +30,14 @@ var attributeDefinitions = []*dynamodb.AttributeDefinition{
 	},
 }
 
-var provisionedThroughput = &dynamodb.ProvisionedThroughput{
-	ReadCapacityUnits:  aws.Int64(int64(100)),
-	WriteCapacityUnits: aws.Int64(int64(100)),
+var throughput = &dynamodb.ProvisionedThroughput{
+	ReadCapacityUnits:  aws.Int64(int64(20000)),
+	WriteCapacityUnits: aws.Int64(int64(10000)),
+}
+
+var checkpoint_throughput = &dynamodb.ProvisionedThroughput{
+	ReadCapacityUnits:  aws.Int64(int64(10)),
+	WriteCapacityUnits: aws.Int64(int64(10)),
 }
 
 var checkPointKeySchema = []*dynamodb.KeySchemaElement{
@@ -58,63 +64,63 @@ var cpAttributeDefinitions = []*dynamodb.AttributeDefinition{
 
 var streamSpec = &dynamodb.StreamSpecification{StreamEnabled: aws.Bool(true), StreamViewType: aws.String("NEW_AND_OLD_IMAGES")}
 
-func (app *appConfig) createCheckpointTable() {
-	app.logger.WithFields(logging.Fields{
-		"Table Name": app.ddbTable,
+func (app *appConfig) createCheckpointTable(checkpointDynamo *dynamodb.DynamoDB) {
+	logger.WithFields(logging.Fields{
+		"Table Name": os.Getenv(paramCheckpointTable),
 	}).Info("Creating checkpoint table")
-	_, err := app.ddbClient.CreateTable(&dynamodb.CreateTableInput{
-		TableName:             aws.String(app.ddbTable),
+	_, err := checkpointDynamo.CreateTable(&dynamodb.CreateTableInput{
+		TableName:             aws.String(os.Getenv(paramCheckpointTable)),
 		KeySchema:             checkPointKeySchema,
 		AttributeDefinitions:  cpAttributeDefinitions,
-		ProvisionedThroughput: provisionedThroughput,
+		ProvisionedThroughput: checkpoint_throughput,
 	})
 
 	if err != nil {
-		app.logger.WithFields(logging.Fields{
+		logger.WithFields(logging.Fields{
 			"Error": err,
 		}).Error("Failed to create checkpoint table")
 	}
 
 	status := ""
 	for status != "ACTIVE" {
-		app.logger.WithFields(logging.Fields{
-			"Table Name": app.ddbTable,
+		logger.WithFields(logging.Fields{
+			"Table Name": os.Getenv(paramCheckpointTable),
 		}).Debug("Waiting for table to be created")
 		time.Sleep(1000 * time.Millisecond)
-		response, _ := app.ddbClient.DescribeTable(
+		response, _ := checkpointDynamo.DescribeTable(
 			&dynamodb.DescribeTableInput{
-				TableName: aws.String(app.ddbTable),
+				TableName: aws.String(os.Getenv(paramCheckpointTable)),
 			},
 		)
 		status = *response.Table.TableStatus
 	}
 }
 
-func setupTest(app *appConfig, key primaryKey) {
+func setupTest(sync *syncState, key primaryKey) {
 	var err error
 
 	table := [2]string{key.sourceTable, key.dstTable}
-	dynamo := [2]*dynamodb.DynamoDB{app.sync[key].srcDynamo, app.sync[key].dstDynamo}
+	dynamo := [2]*dynamodb.DynamoDB{sync.srcDynamo, sync.dstDynamo}
 	for i, name := range table {
-		app.logger.WithFields(logging.Fields{
+		logger.WithFields(logging.Fields{
 			"Table Name": name,
 		}).Info("Creating table")
 		_, err = dynamo[i].CreateTable(&dynamodb.CreateTableInput{
 			TableName:             aws.String(name),
 			KeySchema:             keySchema,
 			AttributeDefinitions:  attributeDefinitions,
-			ProvisionedThroughput: provisionedThroughput,
+			ProvisionedThroughput: throughput,
 			StreamSpecification:   streamSpec,
 		})
 		if err != nil {
-			app.logger.WithFields(logging.Fields{
+			logger.WithFields(logging.Fields{
 				"Table Name": name,
-			}).Error("Table already exists")
+			}).Error(err)
 		}
 
 		status := ""
 		for status != "ACTIVE" {
-			app.logger.WithFields(logging.Fields{
+			logger.WithFields(logging.Fields{
 				"Table Name": name,
 			}).Debug("Waiting for table to be created")
 			time.Sleep(1000 * time.Millisecond)
@@ -127,9 +133,9 @@ func setupTest(app *appConfig, key primaryKey) {
 	}
 }
 
-func (app *appConfig) scanTable(key primaryKey, name string) {
+func (sync *syncState) scanTable(key primaryKey, name string) {
 	lastEvaluatedKey := make(map[string]*dynamodb.AttributeValue, 0)
-	maxConnectRetries := app.sync[key].MaxConnectRetries
+	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 	items := make([]map[string]*dynamodb.AttributeValue, 0)
 	input := &dynamodb.ScanInput{TableName: aws.String(name)}
 
@@ -138,17 +144,17 @@ func (app *appConfig) scanTable(key primaryKey, name string) {
 			input.ExclusiveStartKey = lastEvaluatedKey
 		}
 		for i := 0; i < maxConnectRetries; i++ {
-			result, err := app.sync[key].srcDynamo.Scan(input)
+			result, err := sync.srcDynamo.Scan(input)
 			if err != nil {
 				if i == maxConnectRetries-1 {
 					return
 				}
-				app.backoff(i, "Scan")
+				backoff(i, "Scan")
 			} else {
 				lastEvaluatedKey = result.LastEvaluatedKey
 				items = append(items, result.Items...)
 				if len(lastEvaluatedKey) == 0 {
-					app.logger.WithFields(logging.Fields{
+					logger.WithFields(logging.Fields{
 						"Table": name,
 					}).Info("Scan successful")
 					return
@@ -159,13 +165,13 @@ func (app *appConfig) scanTable(key primaryKey, name string) {
 	}
 }
 
-func (app *appConfig) teardown(key primaryKey) {
+func (sync *syncState) teardown(key primaryKey) {
 	table := [2]string{key.sourceTable, key.dstTable}
-	dynamo := [2]*dynamodb.DynamoDB{app.sync[key].srcDynamo,
-		app.sync[key].dstDynamo}
+	dynamo := [2]*dynamodb.DynamoDB{sync.srcDynamo,
+		sync.dstDynamo}
 
 	for i, name := range table {
-		app.logger.WithFields(logging.Fields{
+		logger.WithFields(logging.Fields{
 			"Table": name,
 		}).Info("Tearing down table")
 		_, err := dynamo[i].DeleteTable(&dynamodb.DeleteTableInput{
@@ -173,14 +179,14 @@ func (app *appConfig) teardown(key primaryKey) {
 		})
 
 		if err != nil {
-			app.logger.WithFields(logging.Fields{
+			logger.WithFields(logging.Fields{
 				"Table": name,
 			}).Error("Can't delete table that does not exist")
 			continue
 		}
 		status := "DELETING"
 		for status == "DELETING" {
-			app.logger.WithFields(logging.Fields{
+			logger.WithFields(logging.Fields{
 				"Table": name,
 			}).Info("Waiting for table to be deleted")
 			time.Sleep(1000 * time.Millisecond)
@@ -195,7 +201,32 @@ func (app *appConfig) teardown(key primaryKey) {
 	}
 }
 
-func (app *appConfig) continuousWrite(quit <-chan bool, key primaryKey) {
+func deleteCheckpointTable(checkpointDynamo *dynamodb.DynamoDB) {
+	logger.WithFields(logging.Fields{"Table": os.Getenv(paramCheckpointTable)}).Info("Tearing down table")
+	_, err := checkpointDynamo.DeleteTable(&dynamodb.DeleteTableInput{
+		TableName: aws.String(os.Getenv(paramCheckpointTable)),
+	})
+
+	if err != nil {
+		logger.WithFields(logging.Fields{
+			"Table": os.Getenv(paramCheckpointTable),
+			"Error": err,
+		}).Error("Can't delete table")
+	}
+	status := "DELETING"
+	for status == "DELETING" {
+		time.Sleep(1000 * time.Millisecond)
+		response, _ := checkpointDynamo.DescribeTable(&dynamodb.DescribeTableInput{
+			TableName: aws.String(os.Getenv(paramCheckpointTable)),
+		})
+		if response == nil || response.Table == nil {
+			break
+		}
+		status = *response.Table.TableStatus
+	}
+}
+
+func (sync *syncState) continuousWrite(quit <-chan bool, key primaryKey) {
 	i := 10
 
 	for {
@@ -204,14 +235,14 @@ func (app *appConfig) continuousWrite(quit <-chan bool, key primaryKey) {
 			return
 		default:
 			input := &dynamodb.PutItemInput{
-				TableName: aws.String(app.sync[key].SrcTable),
+				TableName: aws.String(key.sourceTable),
 				Item: map[string]*dynamodb.AttributeValue{
 					partitionKey: {N: aws.String(strconv.FormatInt(int64(i), 10))},
 				},
 			}
-			_, err := app.sync[key].srcDynamo.PutItem(input)
+			_, err := sync.srcDynamo.PutItem(input)
 			if err != nil {
-				app.logger.WithFields(logging.Fields{
+				logger.WithFields(logging.Fields{
 					"Error": err,
 				}).Fatal("Failed to insert item")
 			}
@@ -221,34 +252,32 @@ func (app *appConfig) continuousWrite(quit <-chan bool, key primaryKey) {
 	}
 }
 
-func (app *appConfig) testStreamSyncWait() {
-	for k, _ := range app.sync {
-		quit := make(chan bool)
-		quit2 := make(chan bool)
-		go app.continuousWrite(quit, k)
-		go app.replicate(quit2, k)
-		// Allow some time to sync
-		time.Sleep(5 * time.Second)
-		// Stop writing
-		quit <- true
-		// Wait for some time
-		time.Sleep(5 * time.Second)
-		// Continue writing once again, does the stream sync resume?
-		go app.continuousWrite(quit, k)
-		time.Sleep(5 * time.Second)
-		quit <- true
-		// Block on streamSync
-		<-quit2
-	}
+func (sync *syncState) testStreamSyncWait() {
+	quit := make(chan bool)
+	quit2 := make(chan bool)
+	k := primaryKey{sync.tableConfig.SrcTable, sync.tableConfig.DstTable}
+	go sync.continuousWrite(quit, k)
+	go sync.replicate(quit2, k)
+	// Allow some time to sync
+	time.Sleep(5 * time.Second)
+	// Stop writing
+	quit <- true
+	// Wait for some time
+	time.Sleep(5 * time.Second)
+	// Continue writing once again, does the stream sync resume?
+	go sync.continuousWrite(quit, k)
+	time.Sleep(5 * time.Second)
+	quit <- true
+	// Block on streamSync
+	<-quit2
 }
 
-func (app *appConfig) testExpireShards() {
-	for k, v := range app.state {
-		for random, _ := range v.checkpoint {
-			app.expireCheckpointLocal(k, aws.String(random))
-			app.expireCheckpointRemote(k, random)
-			break
-		}
+func (sync *syncState) testExpireShards() {
+	for random, _ := range sync.checkpoint {
+		k := primaryKey{sync.tableConfig.SrcTable, sync.tableConfig.DstTable}
+		sync.expireCheckpointLocal(k, aws.String(random))
+		sync.expireCheckpointRemote(k, random)
+		break
 	}
 }
 
@@ -263,24 +292,38 @@ func TestAll(t *testing.T) {
 	os.Setenv(paramMaxRetries, "3")
 
 	app := NewApp()
-	app.createCheckpointTable()
-	app.connect()
+	checkpointDynamo := dynamodb.New(session.Must(
+		session.NewSession(
+			aws.NewConfig().
+				WithRegion(os.Getenv(paramCheckpointRegion)).
+				WithEndpoint(os.Getenv(paramCheckpointEndpoint)).
+				WithMaxRetries(maxRetries),
+		)))
 
-	for k, _ := range app.sync {
-		app.teardown(k)
+	deleteCheckpointTable(checkpointDynamo)
+	app.createCheckpointTable(checkpointDynamo)
+
+	var syncWorkers = make([]*syncState, len(app.sync))
+
+	print(len(app.sync))
+
+	for i := 0; i < len(app.sync); i++ {
+		syncWorkers[i] = NewSyncState(app.sync[i])
 	}
 
-	for k, _ := range app.sync {
-		setupTest(app, k)
+	for i := 0; i < len(syncWorkers); i++ {
+		syncWorkers[i].teardown(primaryKey{app.sync[i].SrcTable, app.sync[i].DstTable})
 	}
 
-	app.loadCheckpointTable()
-	app.addNewStateTracker()
+	for i := 0; i < len(syncWorkers); i++ {
+		setupTest(syncWorkers[i], primaryKey{app.sync[i].SrcTable, app.sync[i].DstTable})
+	}
 
-	app.testStreamSyncWait()
-	app.testExpireShards()
-	/*for k, _ := range app.sync {
-		app.scanTable(k, k.sourceTable)
-		app.scanTable(k, k.dstTable)
-	}*/
+	//main()
+
+	for i := 0; i < len(syncWorkers); i++ {
+		syncWorkers[i].loadCheckpointTable()
+		syncWorkers[i].testStreamSyncWait()
+		syncWorkers[i].testExpireShards()
+	}
 }
