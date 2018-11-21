@@ -105,7 +105,7 @@ func (sync *syncState) writeTable(
 			requestSize := len(writeRequest[dst])
 			if int64(requestSize) == writeBatchSize {
 				sync.rateLimiterLock.Lock()
-				rl.Acquire(key.dstTable, writeBatchSize)
+				rl.Acquire(sync.tableConfig.DstTable, writeBatchSize)
 				sync.rateLimiterLock.Unlock()
 				err := sync.writeBatch(writeRequest, key)
 				if err != nil {
@@ -138,7 +138,7 @@ func (sync *syncState) writeTable(
 		requestSize := len(writeRequest[dst])
 		if requestSize > 0 {
 			sync.rateLimiterLock.Lock()
-			rl.Acquire(key.dstTable, int64(requestSize))
+			rl.Acquire(sync.tableConfig.DstTable, int64(requestSize))
 			sync.rateLimiterLock.Unlock()
 			err := sync.writeBatch(writeRequest, key)
 			if err != nil {
@@ -179,7 +179,7 @@ func (sync *syncState) readTable(
 
 	for {
 		input := &dynamodb.ScanInput{
-			TableName:      aws.String(key.sourceTable),
+			TableName:      aws.String(sync.tableConfig.SrcTable),
 			ConsistentRead: aws.Bool(true),
 			Segment:        aws.Int64(int64(id)),
 			TotalSegments:  aws.Int64(int64(sync.tableConfig.ReadWorkers)),
@@ -366,7 +366,7 @@ func (sync *syncState) createTable(key primaryKey, properties *dynamodb.Describe
 	}).Info("Creating table")
 
 	input := &dynamodb.CreateTableInput{
-		TableName:             aws.String(key.dstTable),
+		TableName:             aws.String(sync.tableConfig.DstTable),
 		KeySchema:             properties.Table.KeySchema,
 		AttributeDefinitions:  properties.Table.AttributeDefinitions,
 		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
@@ -380,7 +380,7 @@ func (sync *syncState) createTable(key primaryKey, properties *dynamodb.Describe
 	status := ""
 	for status != "ACTIVE" {
 		output, _ := sync.dstDynamo.DescribeTable(&dynamodb.DescribeTableInput{
-			TableName: aws.String(key.dstTable),
+			TableName: aws.String(sync.tableConfig.DstTable),
 		})
 		status = *output.Table.TableStatus
 		logger.WithFields(logging.Fields{
@@ -397,17 +397,17 @@ func (sync *syncState) deleteTable(key primaryKey) error {
 		"Destination Table": key.dstTable,
 	}).Info("Dropping items from stale table")
 
-	if strings.Contains(strings.ToLower(key.dstTable), "prod") ||
-		strings.Contains(strings.ToLower(key.dstTable), "production") {
+	if strings.Contains(strings.ToLower(sync.tableConfig.DstTable), "prod") ||
+		strings.Contains(strings.ToLower(sync.tableConfig.DstTable), "production") {
 		logger.WithFields(logging.Fields{
-			"Destination Table": key.dstTable,
+			"Destination Table": sync.tableConfig.DstTable,
 		}).Info("Warning! The table you are trying to delete might be a " +
 			"production table. Double check the source and destination tables.")
 		return errors.New("will not delete a table with `production` in its name")
 	}
 
 	input := &dynamodb.DeleteTableInput{
-		TableName: aws.String(key.dstTable),
+		TableName: aws.String(sync.tableConfig.DstTable),
 	}
 	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 	var err error
@@ -416,7 +416,7 @@ func (sync *syncState) deleteTable(key primaryKey) error {
 		_, err := sync.dstDynamo.DeleteTable(input)
 		if err != nil {
 			logger.WithFields(logging.Fields{
-				"Destination Table": key.dstTable,
+				"Destination Table": sync.tableConfig.DstTable,
 			}).Debug("Failed to delete table. Retry in progress")
 		} else {
 			break

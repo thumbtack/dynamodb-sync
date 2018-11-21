@@ -14,7 +14,7 @@ import (
 // Helper function to get the streamArn
 func (sync *syncState) getStreamArn(key primaryKey) (string, error) {
 	describeTableInput := &dynamodb.DescribeTableInput{
-		TableName: aws.String(key.sourceTable),
+		TableName: aws.String(sync.tableConfig.SrcTable),
 	}
 	// Remove after debugging
 	logger.WithFields(logging.Fields{"TableName": key.sourceTable}).Debug()
@@ -126,7 +126,7 @@ func (sync *syncState) shardSyncStart(key primaryKey,
 				"Records len":       len(records.Records),
 				"Source Table":      key.sourceTable,
 				"Destination Table": key.dstTable,
-			}).Info("Shard sync, writing records")
+			}).Debug("Shard sync, writing records")
 			sync.writeRecords(records.Records, key, shard)
 		}
 		shardIterator = records.NextShardIterator
@@ -193,7 +193,7 @@ func (sync *syncState) writeRecords(
 				"Source Table":      key.sourceTable,
 				"Destination Table": key.dstTable,
 				"Shard Id":          *shard.ShardId,
-			}).Info("Record counter")
+			}).Debug("Record counter")
 			if sync.recordCounter == sync.tableConfig.UpdateCheckpointThreshold {
 				sync.updateCheckpoint(key,
 					*r.Dynamodb.SequenceNumber,

@@ -80,8 +80,8 @@ func (state *syncState) copyTable(key primaryKey) {
 	// Fix up the r/w capacity of src and dst tables
 	// Save the old values to reset the values once
 	// we are done copying
-	sourceCapacity := state.getCapacity(key.sourceTable, state.srcDynamo)
-	dstCapacity := state.getCapacity(key.dstTable, state.dstDynamo)
+	sourceCapacity := state.getCapacity(state.tableConfig.SrcTable, state.srcDynamo)
+	dstCapacity := state.getCapacity(state.tableConfig.DstTable, state.dstDynamo)
 	var isSourceThroughputChanged = false
 	var isDstThroughputChanged = false
 	srcDynamo := state.srcDynamo
@@ -92,7 +92,7 @@ func (state *syncState) copyTable(key primaryKey) {
 			state.tableConfig.ReadQps,
 			sourceCapacity.writeCapacity,
 		}
-		err := state.updateCapacity(key.sourceTable, newCapacity, srcDynamo)
+		err := state.updateCapacity(state.tableConfig.SrcTable, newCapacity, srcDynamo)
 		if err != nil {
 			logger.WithFields(logging.Fields{"Table": key.sourceTable}).
 				Error("Unable to update capacity, won't proceed with copy")
@@ -106,7 +106,7 @@ func (state *syncState) copyTable(key primaryKey) {
 			dstCapacity.readCapacity,
 			state.tableConfig.WriteQps,
 		}
-		err := state.updateCapacity(key.dstTable, newCapacity, dstDynamo)
+		err := state.updateCapacity(state.tableConfig.DstTable, newCapacity, dstDynamo)
 		if err != nil {
 			logger.WithFields(logging.Fields{"Table": key.dstTable}).
 				Error("Unable to update capacity, won't proceed with copy")
@@ -150,33 +150,19 @@ func (state *syncState) copyTable(key primaryKey) {
 
 	// Reset table capacity to original values
 	if isSourceThroughputChanged {
-		err := state.updateCapacity(key.sourceTable, sourceCapacity, srcDynamo)
+		err := state.updateCapacity(state.tableConfig.SrcTable, sourceCapacity, srcDynamo)
 		if err != nil {
 			logger.WithFields(logging.Fields{"Table": key.sourceTable}).
 				Error("Failed to reset capacity")
 		}
 	}
 	if isDstThroughputChanged {
-		err := state.updateCapacity(key.dstTable, dstCapacity, dstDynamo)
+		err := state.updateCapacity(state.tableConfig.DstTable, dstCapacity, dstDynamo)
 		if err != nil {
 			logger.WithFields(logging.Fields{"Table": key.dstTable}).
 				Error("Failed to reset capacity")
 		}
 	}
-}
-
-func (sync *syncState) describeTable(key primaryKey) (*dynamodb.DescribeTableOutput, error) {
-	logger.WithFields(logging.Fields{
-		"Destination Table": key.dstTable,
-	}).Info("Getting table properties")
-
-	input := &dynamodb.DescribeTableInput{
-		TableName: aws.String(key.dstTable),
-	}
-
-	output, err := sync.dstDynamo.DescribeTable(input)
-
-	return output, err
 }
 
 // Check if the stream needs to be synced from the beginning, or

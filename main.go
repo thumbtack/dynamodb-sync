@@ -25,6 +25,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
@@ -69,6 +70,8 @@ type config struct {
 	DstEndpoint               string `json:"dst_endpoint"`
 	SrcEnv                    string `json:"src_env"`
 	DstEnv                    string `json:"dst_env"`
+	SrcAccount                string `json:"src_account"`
+	DstAccount                string `json:"dst_account"`
 	MaxConnectRetries         int    `json:"max_connect_retries"`
 	ReadWorkers               int    `json:"read_workers"`
 	WriteWorkers              int    `json:"write_workers"`
@@ -96,12 +99,12 @@ type syncState struct {
 	timestamp             time.Time
 }
 
-func getRoleArn(env string) (string) {
+func getRoleArn(env string, account string) (string) {
 	var roleType = ""
-	if os.Getenv(paramConfigDir) != "shared" {
-		roleType = "OLD_" + strings.ToUpper(env) + "_ROLE"
-	} else {
+	if strings.ToLower(account) != "admin" {
 		roleType = "NEW_" + strings.ToUpper(env) + "_ROLE"
+	} else {
+		roleType = "OLD_" + strings.ToUpper(env) + "_ROLE"
 	}
 	logger.WithFields(logging.Fields{"Roletype": roleType}).Debug()
 	return os.Getenv(roleType)
@@ -127,8 +130,8 @@ func NewSyncState(tableConfig config) *syncState {
 				WithEndpoint(tableConfig.DstEndpoint).
 				WithMaxRetries(tableConfig.MaxConnectRetries),
 		))
-	srcRoleArn := getRoleArn(tableConfig.SrcEnv)
-	dstRoleArn := getRoleArn(tableConfig.DstEnv)
+	srcRoleArn := getRoleArn(tableConfig.SrcEnv, tableConfig.SrcAccount)
+	dstRoleArn := getRoleArn(tableConfig.DstEnv, tableConfig.DstAccount)
 
 	if srcRoleArn == "" || dstRoleArn == "" {
 		logger.WithFields(logging.Fields{}).
@@ -263,10 +266,20 @@ func setDefaults(tableConfig []config) ([]config, error) {
 		if tableConfig[i].SrcTable == "" ||
 			tableConfig[i].DstTable == "" ||
 			tableConfig[i].SrcRegion == "" ||
-			tableConfig[i].DstRegion == "" {
+			tableConfig[i].DstRegion == "" ||
+			tableConfig[i].SrcEnv == "" ||
+			tableConfig[i].DstEnv == "" {
 			err = errors.New("invalid JSON: source and destination table " +
 				"and region are mandatory")
 			continue
+		}
+
+		if tableConfig[i].SrcAccount == "" {
+			tableConfig[i].SrcAccount = "admin"
+		}
+
+		if tableConfig[i].DstAccount == "" {
+			tableConfig[i].DstAccount = "admin"
 		}
 
 		if tableConfig[i].MaxConnectRetries == 0 {
@@ -312,11 +325,26 @@ func (sync *syncState) isFreshStart(key primaryKey) bool {
 	return false
 }
 
+func getPrimaryKey(sync config) (primaryKey) {
+	key := primaryKey{}
+	if sync.SrcAccount == "admin" {
+		key.sourceTable = sync.SrcTable
+	} else {
+		key.sourceTable = sync.SrcTable + ".account." + sync.SrcAccount
+	}
+	if sync.DstAccount == "admin" {
+		key.dstTable = sync.DstTable
+	} else {
+		key.dstTable = sync.DstTable + ".account." + sync.DstAccount
+	}
+	return key
+}
+
 func main() {
 	app := NewApp()
 	quit := make(chan bool)
 	for i := 0; i < len(app.sync); i++ {
-		key := primaryKey{app.sync[i].SrcTable, app.sync[i].DstTable}
+		key := getPrimaryKey(app.sync[i])
 		logger.WithFields(logging.Fields{
 			"Source Table":      key.sourceTable,
 			"Destination Table": key.dstTable,
