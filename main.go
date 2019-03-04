@@ -25,7 +25,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
@@ -130,7 +129,7 @@ func NewSyncState(tableConfig config) *syncState {
 				WithEndpoint(tableConfig.DstEndpoint).
 				WithMaxRetries(tableConfig.MaxConnectRetries),
 		))
-	srcRoleArn := getRoleArn(tableConfig.SrcEnv, tableConfig.SrcAccount)
+	/*srcRoleArn := getRoleArn(tableConfig.SrcEnv, tableConfig.SrcAccount)
 	dstRoleArn := getRoleArn(tableConfig.DstEnv, tableConfig.DstAccount)
 
 	if srcRoleArn == "" || dstRoleArn == "" {
@@ -148,7 +147,10 @@ func NewSyncState(tableConfig config) *syncState {
 
 	srcDynamo = dynamodb.New(srcSess, &aws.Config{Credentials: srcCreds})
 	dstDynamo = dynamodb.New(dstSess, &aws.Config{Credentials: dstCreds})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})
+	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})*/
+	srcDynamo = dynamodb.New(srcSess, &aws.Config{})
+	dstDynamo = dynamodb.New(dstSess, &aws.Config{})
+	stream = dynamodbstreams.New(srcSess, &aws.Config{})
 
 	return &syncState{
 		tableConfig:           tableConfig,
@@ -340,6 +342,10 @@ func getPrimaryKey(sync config) (primaryKey) {
 	return key
 }
 
+func (sync *syncState) runWeekly(quit <-chan bool, key primaryKey) {
+	sync.replicate(quit, key)
+}
+
 func main() {
 	app := NewApp()
 	quit := make(chan bool)
@@ -365,12 +371,12 @@ func main() {
 		// Add a cron job if the schedule is once a week
 		if !app.sync[i].EnableStreaming {
 			c := cron.New()
-			err := c.AddFunc("0 0 0 * * 5", func() {
+			err := c.AddFunc("* 37 * * * *", func() {
 				logger.WithFields(logging.Fields{
 					"Source Table":      key.sourceTable,
 					"Destination Table": key.dstTable,
 				}).Info("Starting cron job")
-				syncWorker.replicate(quit, key)
+				syncWorker.runWeekly(quit, key)
 			})
 			if err != nil {
 				logger.WithFields(logging.Fields{

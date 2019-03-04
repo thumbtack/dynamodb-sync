@@ -33,13 +33,13 @@ func (sync *syncState) replicate(quit <-chan bool, key primaryKey) {
 
 		// Update checkpoint
 		sync.updateCheckpointTimestamp(key)
-
-		// Check if streaming is needed
-		if sync.tableConfig.EnableStreaming == false {
-			// Return after copying tables, don't move on to streaming
-			return
-		}
 	}
+
+	// Check if streaming is needed
+	if !sync.tableConfig.EnableStreaming {
+		return
+	}
+
 	for {
 		select {
 		case <-quit:
