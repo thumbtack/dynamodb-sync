@@ -114,12 +114,15 @@ func NewSyncState(tableConfig config) *syncState {
 	var srcDynamo, dstDynamo *dynamodb.DynamoDB
 	var stream *dynamodbstreams.DynamoDBStreams
 
+	httpClient := &http.Client{Timeout:1*time.Second}
+
 	srcSess := session.Must(
 		session.NewSession(
 			aws.NewConfig().
 				WithRegion(tableConfig.SrcRegion).
 				WithEndpoint(tableConfig.SrcEndpoint).
-				WithMaxRetries(tableConfig.MaxConnectRetries),
+				WithMaxRetries(tableConfig.MaxConnectRetries).
+				WithHTTPClient(httpClient),
 		))
 
 	dstSess := session.Must(
@@ -147,7 +150,8 @@ func NewSyncState(tableConfig config) *syncState {
 
 	srcDynamo = dynamodb.New(srcSess, &aws.Config{Credentials: srcCreds})
 	dstDynamo = dynamodb.New(dstSess, &aws.Config{Credentials: dstCreds})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})*/
+	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds}) */
+
 	srcDynamo = dynamodb.New(srcSess, &aws.Config{})
 	dstDynamo = dynamodb.New(dstSess, &aws.Config{})
 	stream = dynamodbstreams.New(srcSess, &aws.Config{})
@@ -371,7 +375,7 @@ func main() {
 		// Add a cron job if the schedule is once a week
 		if !app.sync[i].EnableStreaming {
 			c := cron.New()
-			err := c.AddFunc("* 37 * * * *", func() {
+			err := c.AddFunc("0 0 0 * * 5", func() {
 				logger.WithFields(logging.Fields{
 					"Source Table":      key.sourceTable,
 					"Destination Table": key.dstTable,
