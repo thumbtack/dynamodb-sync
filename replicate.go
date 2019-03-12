@@ -14,7 +14,7 @@ import (
 const (
 	maxBatchSize               = 25
 	streamRetentionHours       = 24 * time.Hour
-	shardEnumerateInterval     = 180 * time.Second
+	shardEnumerateInterval     = 300 * time.Second
 	shardWaitForParentInterval = 60 * time.Second
 	streamEnableWaitInterval   = 10 * time.Second
 	shardIteratorPointer       = "AFTER_SEQUENCE_NUMBER"
@@ -187,6 +187,17 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 	var err error = nil
 	var result *dynamodbstreams.DescribeStreamOutput
 	lastEvaluatedShardId := ""
+	numShards := 0
+
+	type shardStats struct {
+		numShards    int
+		tableName    string
+	}
+
+	type activeShardStats struct {
+		numActiveShards int
+		tableName       string
+	}
 
 	for {
 		input := &dynamodbstreams.DescribeStreamInput{
@@ -210,6 +221,9 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 				break
 			}
 		}
+
+		numShards += len(result.StreamDescription.Shards)
+		
 		for _, shard := range result.StreamDescription.Shards {
 			sync.checkpointLock.RLock()
 			_, ok := sync.expiredShards[*shard.ShardId]
@@ -251,6 +265,11 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 			}
 		}
 
+		metricsClient.Measure(activeShardStats{
+			len(sync.activeShardProcessors),
+			key.dstTable},
+		)
+
 		if result.StreamDescription.LastEvaluatedShardId != nil {
 			lastEvaluatedShardId = *result.StreamDescription.LastEvaluatedShardId
 		} else {
@@ -258,11 +277,16 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 			// wait a few seconds before trying again
 			// This API cannot be called more than 10/s
 			lastEvaluatedShardId = ""
+
+			metricsClient.Measure(shardStats{numShards:numShards, tableName:key.sourceTable})
+
+			numShards = 0
 			logger.WithFields(logging.Fields{
 				"Source Table":      key.sourceTable,
 				"Destination Table": key.dstTable,
 				"SleepTime":         shardEnumerateInterval,
 			}).Debug("Sleeping before refreshing list of shards")
+
 			time.Sleep(time.Duration(shardEnumerateInterval))
 		}
 	}

@@ -25,6 +25,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"github.com/thumbtack/go/lib/metrics"
+	"github.com/thumbtack/go/lib/monitoring"
 	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
@@ -59,6 +61,7 @@ var ddbRegion = os.Getenv(paramCheckpointRegion)
 var ddbEndpoint = os.Getenv(paramCheckpointEndpoint)
 var maxRetries = defaultConfigMaxRetries
 var ddbClient = ddbConfigConnect(ddbRegion, ddbEndpoint, maxRetries, *logger)
+var metricsClient = newMetricsClient()
 
 type config struct {
 	SrcTable                  string `json:"src_table"`
@@ -114,7 +117,10 @@ func NewSyncState(tableConfig config) *syncState {
 	var srcDynamo, dstDynamo *dynamodb.DynamoDB
 	var stream *dynamodbstreams.DynamoDBStreams
 
-	httpClient := &http.Client{Timeout:1*time.Second}
+	tr := &http.Transport{
+		MaxIdleConns: 1024,
+	}
+	httpClient := &http.Client{Timeout:1*time.Second, Transport:tr}
 
 	srcSess := session.Must(
 		session.NewSession(
@@ -175,8 +181,8 @@ func NewSyncState(tableConfig config) *syncState {
 }
 
 type appConfig struct {
-	sync    []config
-	verbose bool
+	sync          []config
+	verbose       bool
 }
 
 // The primary key of the Checkpoint ddb table, of the stream etc
@@ -203,6 +209,15 @@ func ddbConfigConnect(region string, endpoint string, maxRetries int, logger log
 				WithEndpoint(endpoint).
 				WithMaxRetries(maxRetries),
 		)))
+}
+
+func newMetricsClient() (client metrics.Client) {
+	client, err := metrics.NewAlfredAppClient()
+	if err != nil {
+		logger.WithFields(logging.Fields{"Error":err}).Error("Error in initializing metrics")
+		os.Exit(1)
+	}
+	return client
 }
 
 // app constructor
@@ -239,11 +254,17 @@ func NewApp() *appConfig {
 	tableConfig, err = setDefaults(tableConfig)
 	if err != nil {
 		logger.WithFields(logging.Fields{"Error": err}).Debug("Error in config file values")
+		os.Exit(1)
+	}
+
+	if err != nil {
+		logger.WithFields(logging.Fields{"Error": err}).Error("Error in initializing metrics")
+		os.Exit(1)
 	}
 
 	return &appConfig{
-		sync:    tableConfig,
-		verbose: true,
+		sync:          tableConfig,
+		verbose:       true,
 	}
 }
 
@@ -396,6 +417,8 @@ func main() {
 			go syncWorker.replicate(quit, key)
 		}
 	}
+
+	monitoring.Process(os.Getpid(), metricsClient)
 
 	http.HandleFunc("/", syncResponder())
 	http.ListenAndServe(":"+os.Getenv(paramPort), nil)
