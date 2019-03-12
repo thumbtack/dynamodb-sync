@@ -118,9 +118,12 @@ func NewSyncState(tableConfig config) *syncState {
 	var stream *dynamodbstreams.DynamoDBStreams
 
 	tr := &http.Transport{
-		MaxIdleConns: 1024,
+		MaxIdleConns:       2048,
+		MaxIdleConnsPerHost:1024,
 	}
-	httpClient := &http.Client{Timeout:1*time.Second, Transport:tr}
+	httpClient := &http.Client{
+		Timeout:8*time.Second,
+		Transport:tr}
 
 	srcSess := session.Must(
 		session.NewSession(
