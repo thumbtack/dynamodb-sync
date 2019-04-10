@@ -91,13 +91,13 @@ func (sync *syncState) shardSyncStart(key primaryKey,
 			logger.WithFields(logging.Fields{
 				"Source Table": key.sourceTable,
 				"Destination Table": key.dstTable,
-				"Shard Id": *shardId}).Info("Calling GetRecords")
+				"Shard Id": *shardId}).Debug("Calling GetRecords")
 			records, err = sync.stream.GetRecords(
 				&dynamodbstreams.GetRecordsInput{ShardIterator: shardIterator})
 			logger.WithFields(logging.Fields{
 				"Source Table": key.sourceTable,
 				"Destination Table": key.dstTable,
-				"Shard Id": *shardId}).Info("Returned from GetRecords")
+				"Shard Id": *shardId}).Debug("Returned from GetRecords")
 			if err != nil {
 				if i == maxConnectRetries-1 {
 					logger.WithFields(logging.Fields{

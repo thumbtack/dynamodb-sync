@@ -25,6 +25,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/thumbtack/go/lib/metrics"
 	"github.com/thumbtack/go/lib/monitoring"
 	"io/ioutil"
@@ -80,7 +81,7 @@ type config struct {
 	ReadQps                   int64  `json:"read_qps"`
 	WriteQps                  int64  `json:"write_qps"`
 	UpdateCheckpointThreshold int    `json:"update_checkpoint_threshold"`
-	EnableStreaming           bool   `json:"enable_streaming"`
+	EnableStreaming           *bool   `json:"enable_streaming"`
 	TruncateTable             bool   `json:"truncate_table"`
 }
 
@@ -119,7 +120,7 @@ func NewSyncState(tableConfig config) *syncState {
 
 	tr := &http.Transport{
 		MaxIdleConns:       2048,
-		MaxIdleConnsPerHost:1024,
+		MaxConnsPerHost:    1024,
 	}
 	httpClient := &http.Client{
 		Timeout:8*time.Second,
@@ -141,7 +142,7 @@ func NewSyncState(tableConfig config) *syncState {
 				WithEndpoint(tableConfig.DstEndpoint).
 				WithMaxRetries(tableConfig.MaxConnectRetries),
 		))
-	/*srcRoleArn := getRoleArn(tableConfig.SrcEnv, tableConfig.SrcAccount)
+	srcRoleArn := getRoleArn(tableConfig.SrcEnv, tableConfig.SrcAccount)
 	dstRoleArn := getRoleArn(tableConfig.DstEnv, tableConfig.DstAccount)
 
 	if srcRoleArn == "" || dstRoleArn == "" {
@@ -159,11 +160,11 @@ func NewSyncState(tableConfig config) *syncState {
 
 	srcDynamo = dynamodb.New(srcSess, &aws.Config{Credentials: srcCreds})
 	dstDynamo = dynamodb.New(dstSess, &aws.Config{Credentials: dstCreds})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds}) */
+	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})
 
-	srcDynamo = dynamodb.New(srcSess, &aws.Config{})
+	/*srcDynamo = dynamodb.New(srcSess, &aws.Config{})
 	dstDynamo = dynamodb.New(dstSess, &aws.Config{})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{})
+	stream = dynamodbstreams.New(srcSess, &aws.Config{})*/
 
 	return &syncState{
 		tableConfig:           tableConfig,
@@ -335,6 +336,11 @@ func setDefaults(tableConfig []config) ([]config, error) {
 		if tableConfig[i].UpdateCheckpointThreshold == 0 {
 			tableConfig[i].UpdateCheckpointThreshold = 25
 		}
+
+		if tableConfig[i].EnableStreaming == nil {
+			val := true
+			tableConfig[i].EnableStreaming = &val
+		}
 	}
 
 	return tableConfig, err
@@ -397,7 +403,7 @@ func main() {
 		// Call a go routine to replicate for each key
 
 		// Add a cron job if the schedule is once a week
-		if !app.sync[i].EnableStreaming {
+		if !*app.sync[i].EnableStreaming {
 			c := cron.New()
 			err := c.AddFunc("0 0 0 * * 5", func() {
 				logger.WithFields(logging.Fields{

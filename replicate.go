@@ -36,7 +36,7 @@ func (sync *syncState) replicate(quit <-chan bool, key primaryKey) {
 	}
 
 	// Check if streaming is needed
-	if !sync.tableConfig.EnableStreaming {
+	if !*sync.tableConfig.EnableStreaming {
 		return
 	}
 
