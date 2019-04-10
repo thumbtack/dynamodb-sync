@@ -29,8 +29,10 @@ func (sync *syncState) replicate(quit <-chan bool, key primaryKey) {
 		sync.timestamp = time.Time{}
 
 		// Copy table start
-		sync.copyTable(key)
-
+		err := sync.copyTable(key)
+		if err != nil {
+			return
+		}
 		// Update checkpoint
 		sync.updateCheckpointTimestamp(key)
 	}
@@ -71,7 +73,7 @@ func (sync *syncState) replicate(quit <-chan bool, key primaryKey) {
 // Once all the workers in the readWorker group are done,
 // we close the channel, and wait for the writeWorker group
 // to finish
-func (state *syncState) copyTable(key primaryKey) {
+func (state *syncState) copyTable(key primaryKey) (error){
 	logger.WithFields(logging.Fields{
 		"Source Table":      key.sourceTable,
 		"Destination Table": key.dstTable,
@@ -96,7 +98,7 @@ func (state *syncState) copyTable(key primaryKey) {
 		if err != nil {
 			logger.WithFields(logging.Fields{"Table": key.sourceTable}).
 				Error("Unable to update capacity, won't proceed with copy")
-			return
+			return err
 		}
 		isSourceThroughputChanged = true
 	}
@@ -110,6 +112,7 @@ func (state *syncState) copyTable(key primaryKey) {
 		if err != nil {
 			logger.WithFields(logging.Fields{"Table": key.dstTable}).
 				Error("Unable to update capacity, won't proceed with copy")
+			return err
 		}
 		isDstThroughputChanged = true
 	}
