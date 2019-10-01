@@ -25,9 +25,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
+	//"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/thumbtack/go/lib/metrics"
-	"github.com/thumbtack/go/lib/monitoring"
+	//"github.com/thumbtack/go/lib/monitoring"
 	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
@@ -95,7 +95,6 @@ type syncState struct {
 	activeShardProcessors map[string]bool
 	activeShardLock       sync.RWMutex
 	checkpointLock        sync.RWMutex
-	rateLimiterLock       sync.RWMutex
 	recordCounter         int
 	checkpoint            map[string]string
 	expiredShards         map[string]bool
@@ -155,16 +154,16 @@ func NewSyncState(tableConfig config) *syncState {
 		"Src Role Arn": srcRoleArn,
 		"Dst Role Arn": dstRoleArn}).Debug("Role ARN")
 
-	srcCreds := stscreds.NewCredentials(srcSess, srcRoleArn)
+	/*srcCreds := stscreds.NewCredentials(srcSess, srcRoleArn)
 	dstCreds := stscreds.NewCredentials(dstSess, dstRoleArn)
 
 	srcDynamo = dynamodb.New(srcSess, &aws.Config{Credentials: srcCreds})
 	dstDynamo = dynamodb.New(dstSess, &aws.Config{Credentials: dstCreds})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})
+	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})*/
 
-	/*srcDynamo = dynamodb.New(srcSess, &aws.Config{})
+	srcDynamo = dynamodb.New(srcSess, &aws.Config{})
 	dstDynamo = dynamodb.New(dstSess, &aws.Config{})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{})*/
+	stream = dynamodbstreams.New(srcSess, &aws.Config{})
 
 	return &syncState{
 		tableConfig:           tableConfig,
@@ -175,7 +174,6 @@ func NewSyncState(tableConfig config) *syncState {
 		activeShardProcessors: make(map[string]bool, 0),
 		activeShardLock:       sync.RWMutex{},
 		checkpointLock:        sync.RWMutex{},
-		rateLimiterLock:       sync.RWMutex{},
 		recordCounter:         0,
 		checkpoint:            make(map[string]string, 0),
 		expiredShards:         make(map[string]bool, 0),
@@ -258,11 +256,6 @@ func NewApp() *appConfig {
 	tableConfig, err = setDefaults(tableConfig)
 	if err != nil {
 		logger.WithFields(logging.Fields{"Error": err}).Debug("Error in config file values")
-		os.Exit(1)
-	}
-
-	if err != nil {
-		logger.WithFields(logging.Fields{"Error": err}).Error("Error in initializing metrics")
 		os.Exit(1)
 	}
 
@@ -427,7 +420,7 @@ func main() {
 		}
 	}
 
-	monitoring.Process(os.Getpid(), metricsClient)
+	//monitoring.Process(os.Getpid(), metricsClient)
 
 	http.HandleFunc("/", syncResponder())
 	http.ListenAndServe(":"+os.Getenv(paramPort), nil)

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/thumbtack/goratelimit"
+	"golang.org/x/time/rate"
 	"sync"
 	"time"
 
@@ -123,7 +123,8 @@ func (state *syncState) copyTable(key primaryKey) (error){
 	readWorkers := state.tableConfig.ReadWorkers
 
 	writerWG.Add(writeWorkers)
-	rlDst := goratelimit.New(state.tableConfig.WriteQps)
+
+	rlDst := rate.NewLimiter(rate.Limit(state.tableConfig.WriteQps), maxBatchSize)
 	for i := 0; i < writeWorkers; i++ {
 		logger.WithFields(logging.Fields{
 			"Write Worker":      i,
@@ -166,6 +167,7 @@ func (state *syncState) copyTable(key primaryKey) (error){
 				Error("Failed to reset capacity")
 		}
 	}
+	return nil
 }
 
 // Check if the stream needs to be synced from the beginning, or
@@ -268,11 +270,6 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 			}
 		}
 
-		metricsClient.Measure(activeShardStats{
-			len(sync.activeShardProcessors),
-			key.dstTable},
-		)
-
 		if result.StreamDescription.LastEvaluatedShardId != nil {
 			lastEvaluatedShardId = *result.StreamDescription.LastEvaluatedShardId
 		} else {
@@ -280,8 +277,6 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 			// wait a few seconds before trying again
 			// This API cannot be called more than 10/s
 			lastEvaluatedShardId = ""
-
-			metricsClient.Measure(shardStats{numShards:numShards, tableName:key.sourceTable})
 
 			numShards = 0
 			logger.WithFields(logging.Fields{

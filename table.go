@@ -2,7 +2,7 @@ package main
 
 import (
 	"errors"
-	"fmt"
+	"golang.org/x/time/rate"
 	"os"
 	"strings"
 	"sync"
@@ -11,7 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	logging "github.com/sirupsen/logrus"
-	"github.com/thumbtack/goratelimit"
 )
 
 const (
@@ -22,50 +21,32 @@ const (
 // Batch Writes item to dst table
 func (sync *syncState) writeBatch(
 	batch map[string][]*dynamodb.WriteRequest,
-	key primaryKey) error {
-	var err error
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
+	key primaryKey) {
 	dst := sync.tableConfig.DstTable
+	i := 0
 
 	for len(batch) > 0 {
-		for i := 0; i < maxConnectRetries; i++ {
-			output, err := sync.dstDynamo.BatchWriteItem(
-				&dynamodb.BatchWriteItemInput{
-					RequestItems: batch,
-				})
-			if err != nil {
-				if i == maxConnectRetries-1 {
-					return err
-				}
-				logger.WithFields(logging.Fields{
-					"Source Table":         key.sourceTable,
-					"Destination Table":    key.dstTable,
-					"BatchWrite Item Size": len(batch),
-				}).Debug("BatchWrite size")
-				backoff(i, "BatchWrite")
-				continue
-			}
-			n := len(output.UnprocessedItems[dst])
-			if n > 0 {
+		output,_ := sync.dstDynamo.BatchWriteItem(
+			&dynamodb.BatchWriteItemInput{
+				RequestItems: batch,
+			})
+		n := len(output.UnprocessedItems[dst])
+		if n > 0 {
 				logger.WithFields(logging.Fields{
 					"Unprocessed Items Size": n,
 					"Source Table":           key.sourceTable,
 					"Destination Table":      key.dstTable,
 				}).Debug("Some items failed to be processed")
+				// exponential backoff before retrying
+				backoff(i, "BatchWrite")
+				i++
 				// Retry writing items that were not processed
 				batch = output.UnprocessedItems
-				// don't try connecting again, go back to main for loop
-				break
-			} else {
+		} else {
 				// all done
-				return nil
+				return
 			}
-		}
 	}
-	return errors.New(fmt.Sprintf(
-		"BatchWrite failed after %d attempts: %s",
-		maxConnectRetries, err.Error()),
-	)
 }
 
 // Group items from the `items` channel into
@@ -76,11 +57,10 @@ func (sync *syncState) writeBatch(
 func (sync *syncState) writeTable(
 	key primaryKey,
 	itemsChan chan []map[string]*dynamodb.AttributeValue,
-	writerWG *sync.WaitGroup, id int, rl goratelimit.Limiter) {
+	writerWG *sync.WaitGroup, id int, rl rate.Limiter) {
 	defer writerWG.Done()
 	var writeBatchSize int64
-	//rl := goratelimit.New(sync.tableConfig.WriteQps)
-	//rl.Debug(sync.verbose)
+
 	writeRequest := make(map[string][]*dynamodb.WriteRequest, 0)
 	dst := sync.tableConfig.DstTable
 
@@ -104,24 +84,9 @@ func (sync *syncState) writeTable(
 		for _, item := range items {
 			requestSize := len(writeRequest[dst])
 			if int64(requestSize) == writeBatchSize {
-				sync.rateLimiterLock.Lock()
-				rl.Acquire(sync.tableConfig.DstTable, writeBatchSize)
-				sync.rateLimiterLock.Unlock()
-				err := sync.writeBatch(writeRequest, key)
-				if err != nil {
-					logger.WithFields(logging.Fields{
-						"Error":             err,
-						"Source Table":      key.sourceTable,
-						"Destination Table": key.dstTable,
-					}).Error("Failed to write batch")
-				} else {
-					logger.WithFields(logging.Fields{
-						"Write worker":      id,
-						"Write items size":  requestSize,
-						"Source Table":      key.sourceTable,
-						"Destination Table": key.dstTable,
-					}).Debug("Successfully wrote to dynamodb table")
-				}
+				r := rl.ReserveN(time.Now(), requestSize)
+				time.Sleep(r.Delay())
+				sync.writeBatch(writeRequest, key)
 				writeRequest[dst] = []*dynamodb.WriteRequest{{
 					PutRequest: &dynamodb.PutRequest{
 						Item: item,
@@ -137,25 +102,9 @@ func (sync *syncState) writeTable(
 		// Maybe more items are left because len(items) % maxBatchSize != 0
 		requestSize := len(writeRequest[dst])
 		if requestSize > 0 {
-			sync.rateLimiterLock.Lock()
-			rl.Acquire(sync.tableConfig.DstTable, int64(requestSize))
-			sync.rateLimiterLock.Unlock()
-			err := sync.writeBatch(writeRequest, key)
-			if err != nil {
-				logger.WithFields(logging.Fields{
-					"Error":             err,
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
-				}).Error("Failed to write batch")
-			} else {
-				logger.WithFields(logging.Fields{
-					"Write worker":      id,
-					"Write items size":  requestSize,
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
-				}).Debug("Successfully wrote to dynamodb table")
-			}
-
+			r := rl.ReserveN(time.Now(), requestSize)
+			time.Sleep(r.Delay())
+			sync.writeBatch(writeRequest, key)
 			writeRequest = make(map[string][]*dynamodb.WriteRequest, 0)
 		}
 	}
