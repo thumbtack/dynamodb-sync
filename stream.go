@@ -62,12 +62,11 @@ func (sync *syncState) shardSyncStart(key primaryKey,
 	}
 
 	shardIteratorInput := sync.getShardIteratorInput(key, *shardId, streamArn)
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 
-	for i := 0; i < maxConnectRetries; i++ {
+	for i := 1; i <= maxRetries; i++ {
 		iterator, err = sync.stream.GetShardIterator(shardIteratorInput)
 		if err != nil {
-			if i == maxConnectRetries-1 {
+			if i == maxRetries {
 				logger.WithFields(logging.Fields{
 					"Shard Id":          *shardId,
 					"Error":             err,
@@ -87,19 +86,13 @@ func (sync *syncState) shardSyncStart(key primaryKey,
 	// when nil, the shard has been closed, and the requested iterator
 	// will not return any more data
 	for shardIterator != nil {
-		for i := 0; i < maxConnectRetries; i++ {
-			logger.WithFields(logging.Fields{
-				"Source Table": key.sourceTable,
-				"Destination Table": key.dstTable,
-				"Shard Id": *shardId}).Debug("Calling GetRecords")
+		for i := 1; i <= maxRetries; i++ {
+
 			records, err = sync.stream.GetRecords(
 				&dynamodbstreams.GetRecordsInput{ShardIterator: shardIterator})
-			logger.WithFields(logging.Fields{
-				"Source Table": key.sourceTable,
-				"Destination Table": key.dstTable,
-				"Shard Id": *shardId}).Debug("Returned from GetRecords")
+
 			if err != nil {
-				if i == maxConnectRetries-1 {
+				if i == maxRetries {
 					logger.WithFields(logging.Fields{
 						"Shard Id":          *shardId,
 						"Error":             err,
@@ -209,13 +202,12 @@ func (sync *syncState) writeRecords(
 // Insert this record in the dst table
 func (sync *syncState) insertRecord(item map[string]*dynamodb.AttributeValue, key primaryKey) error {
 	var err error
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 
 	input := &dynamodb.PutItemInput{
 		Item:      item,
 		TableName: aws.String(sync.tableConfig.DstTable),
 	}
-	for i := 0; i < maxConnectRetries; i++ {
+	for i := 1; i <= maxRetries; i++ {
 		_, err = sync.dstDynamo.PutItem(input)
 		if err == nil {
 			return nil
@@ -229,13 +221,12 @@ func (sync *syncState) insertRecord(item map[string]*dynamodb.AttributeValue, ke
 // Remove this record from the dst table
 func (sync *syncState) removeRecord(item map[string]*dynamodb.AttributeValue, key primaryKey) error {
 	var err error
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 
 	input := &dynamodb.DeleteItemInput{
 		Key:       item,
 		TableName: aws.String(sync.tableConfig.DstTable),
 	}
-	for i := 0; i < maxConnectRetries; i++ {
+	for i := 0; i < maxRetries; i++ {
 		_, err = sync.dstDynamo.DeleteItem(input)
 		if err == nil {
 			return nil

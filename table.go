@@ -21,32 +21,38 @@ const (
 // Batch Writes item to dst table
 func (sync *syncState) writeBatch(
 	batch map[string][]*dynamodb.WriteRequest,
-	key primaryKey) {
-	dst := sync.tableConfig.DstTable
-	i := 0
+	key primaryKey, rl *rate.Limiter, reqCapacity float64,
+	writeBatchSize int64) []*dynamodb.ConsumedCapacity {
+		i := 0
+		r := rl.ReserveN(time.Now(), int(reqCapacity))
+		if !r.OK() {
+			r = rl.ReserveN(time.Now(), int(writeBatchSize))
+		}
+		time.Sleep(r.Delay())
+		consumedCapacity := make([]*dynamodb.ConsumedCapacity, 0)
 
-	for len(batch) > 0 {
-		output,_ := sync.dstDynamo.BatchWriteItem(
-			&dynamodb.BatchWriteItemInput{
-				RequestItems: batch,
-			})
-		n := len(output.UnprocessedItems[dst])
-		if n > 0 {
-				logger.WithFields(logging.Fields{
-					"Unprocessed Items Size": n,
-					"Source Table":           key.sourceTable,
-					"Destination Table":      key.dstTable,
-				}).Debug("Some items failed to be processed")
-				// exponential backoff before retrying
-				backoff(i, "BatchWrite")
-				i++
-				// Retry writing items that were not processed
-				batch = output.UnprocessedItems
-		} else {
-				// all done
-				return
+		for len(batch) > 0 {
+			output,_ := sync.dstDynamo.BatchWriteItem(
+				&dynamodb.BatchWriteItemInput{
+					RequestItems: batch,
+				})
+
+			consumedCapacity = append(consumedCapacity, output.ConsumedCapacity...)
+
+			if output.UnprocessedItems != nil {
+					logger.WithFields(logging.Fields{
+						"Unprocessed Items Size": len(output.UnprocessedItems),
+						"Source Table":           key.sourceTable,
+						"Destination Table":      key.dstTable,
+					}).Debug("Some items failed to be processed")
+					// exponential backoff before retrying
+					backoff(i, "BatchWrite")
+					i++
+					// Retry writing items that were not processed
+					batch = output.UnprocessedItems
 			}
-	}
+		}
+		return consumedCapacity
 }
 
 // Group items from the `items` channel into
@@ -57,9 +63,10 @@ func (sync *syncState) writeBatch(
 func (sync *syncState) writeTable(
 	key primaryKey,
 	itemsChan chan []map[string]*dynamodb.AttributeValue,
-	writerWG *sync.WaitGroup, id int, rl rate.Limiter) {
+	writerWG *sync.WaitGroup, id int, rl *rate.Limiter) {
 	defer writerWG.Done()
 	var writeBatchSize int64
+	var reqCapacity float64 = 0
 
 	writeRequest := make(map[string][]*dynamodb.WriteRequest, 0)
 	dst := sync.tableConfig.DstTable
@@ -84,9 +91,12 @@ func (sync *syncState) writeTable(
 		for _, item := range items {
 			requestSize := len(writeRequest[dst])
 			if int64(requestSize) == writeBatchSize {
-				r := rl.ReserveN(time.Now(), requestSize)
-				time.Sleep(r.Delay())
-				sync.writeBatch(writeRequest, key)
+				consumedCapacity := sync.writeBatch(writeRequest, key, rl, reqCapacity, writeBatchSize)
+				reqCapacity = 0
+				for _, each := range consumedCapacity {
+					reqCapacity += *each.CapacityUnits
+				}
+
 				writeRequest[dst] = []*dynamodb.WriteRequest{{
 					PutRequest: &dynamodb.PutRequest{
 						Item: item,
@@ -102,9 +112,7 @@ func (sync *syncState) writeTable(
 		// Maybe more items are left because len(items) % maxBatchSize != 0
 		requestSize := len(writeRequest[dst])
 		if requestSize > 0 {
-			r := rl.ReserveN(time.Now(), requestSize)
-			time.Sleep(r.Delay())
-			sync.writeBatch(writeRequest, key)
+			sync.writeBatch(writeRequest, key, rl, reqCapacity, writeBatchSize)
 			writeRequest = make(map[string][]*dynamodb.WriteRequest, 0)
 		}
 	}
@@ -123,8 +131,6 @@ func (sync *syncState) readTable(
 	defer readerWG.Done()
 
 	lastEvaluatedKey := make(map[string]*dynamodb.AttributeValue, 0)
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
-	//rl := goratelimit.New(sync.tableConfig.ReadQps)
 
 	for {
 		input := &dynamodb.ScanInput{
@@ -132,8 +138,6 @@ func (sync *syncState) readTable(
 			ConsistentRead: aws.Bool(true),
 			Segment:        aws.Int64(int64(id)),
 			TotalSegments:  aws.Int64(int64(sync.tableConfig.ReadWorkers)),
-			//Limit:          aws.Int64(int64(100)),
-			//ReturnConsumedCapacity: aws.String(dynamodb.ReturnConsumedCapacityTotal),
 		}
 
 		if len(lastEvaluatedKey) > 0 {
@@ -142,8 +146,7 @@ func (sync *syncState) readTable(
 
 		successfulScan := false
 
-		for i := 0; i < maxConnectRetries; i++ {
-			//rl.Acquire("", 5000)
+		for i := 0; i < maxRetries; i++ {
 			result, err := sync.srcDynamo.Scan(input)
 			if err != nil {
 				logger.WithFields(logging.Fields{
@@ -175,7 +178,7 @@ func (sync *syncState) readTable(
 		} else {
 			logger.WithFields(logging.Fields{
 				"Source Table":       key.sourceTable,
-				"Number of Attempts": maxConnectRetries,
+				"Number of Attempts": maxRetries,
 			}).Error("Scan failed")
 			os.Exit(1)
 		}
@@ -186,7 +189,7 @@ func (sync *syncState) updateCapacity(
 	tableName string,
 	newThroughput provisionedThroughput,
 	dynamo *dynamodb.DynamoDB) error {
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
+
 	var err error
 	logger.WithFields(logging.Fields{
 		"Table":tableName,
@@ -200,7 +203,7 @@ func (sync *syncState) updateCapacity(
 		},
 	}
 
-	for i := 0; i < maxConnectRetries; i++ {
+	for i := 0; i < maxRetries; i++ {
 		_, err = dynamo.UpdateTable(input)
 		if err != nil {
 			logger.WithFields(logging.Fields{
@@ -253,7 +256,6 @@ func (sync *syncState) updateCapacity(
 // and write capacity of the destination table, this functions returns
 // read(src) and write(dst) as a struct
 func (sync *syncState) getCapacity(tableName string, dynamo *dynamodb.DynamoDB) provisionedThroughput {
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 	var err error = nil
 	var input *dynamodb.DescribeTableInput
 	var output *dynamodb.DescribeTableOutput
@@ -262,7 +264,7 @@ func (sync *syncState) getCapacity(tableName string, dynamo *dynamodb.DynamoDB) 
 		TableName: aws.String(tableName),
 	}
 
-	for i := 0; i < maxConnectRetries; i++ {
+	for i := 0; i < maxRetries; i++ {
 		output, err = dynamo.DescribeTable(input)
 		if err != nil {
 			logger.WithFields(logging.Fields{
@@ -287,14 +289,13 @@ func (sync *syncState) getCapacity(tableName string, dynamo *dynamodb.DynamoDB) 
 }
 
 func (sync *syncState) getTableSize(table string, dynamo *dynamodb.DynamoDB) int64 {
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 	var input *dynamodb.DescribeTableInput
 	var size int64 = 0
 	input = &dynamodb.DescribeTableInput{
 		TableName: aws.String(table),
 	}
 
-	for i := 0; i < maxConnectRetries; i++ {
+	for i := 0; i < maxRetries; i++ {
 		output, err := dynamo.DescribeTable(input)
 		if err != nil {
 			logger.WithFields(logging.Fields{
@@ -358,11 +359,10 @@ func (sync *syncState) deleteTable(key primaryKey) error {
 	input := &dynamodb.DeleteTableInput{
 		TableName: aws.String(sync.tableConfig.DstTable),
 	}
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 	var err error
 
-	for i := 0; i < maxConnectRetries; i++ {
-		_, err := sync.dstDynamo.DeleteTable(input)
+	for i := 0; i < maxRetries; i++ {
+		_, err = sync.dstDynamo.DeleteTable(input)
 		if err != nil {
 			logger.WithFields(logging.Fields{
 				"Destination Table": sync.tableConfig.DstTable,

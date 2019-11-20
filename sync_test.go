@@ -135,7 +135,6 @@ func setupTest(sync *syncState, key primaryKey) {
 
 func (sync *syncState) scanTable(key primaryKey, name string) {
 	lastEvaluatedKey := make(map[string]*dynamodb.AttributeValue, 0)
-	maxConnectRetries := sync.tableConfig.MaxConnectRetries
 	items := make([]map[string]*dynamodb.AttributeValue, 0)
 	input := &dynamodb.ScanInput{TableName: aws.String(name)}
 
@@ -143,10 +142,10 @@ func (sync *syncState) scanTable(key primaryKey, name string) {
 		if len(lastEvaluatedKey) > 0 {
 			input.ExclusiveStartKey = lastEvaluatedKey
 		}
-		for i := 0; i < maxConnectRetries; i++ {
+		for i := 1; i <= maxRetries; i++ {
 			result, err := sync.srcDynamo.Scan(input)
 			if err != nil {
-				if i == maxConnectRetries-1 {
+				if i == maxRetries {
 					return
 				}
 				backoff(i, "Scan")
@@ -289,7 +288,6 @@ func TestAll(t *testing.T) {
 	os.Setenv(paramCheckpointRegion, "us-west-2")
 	os.Setenv(paramCheckpointTable, "local-dynamodb-sync.checkpoint")
 	os.Setenv(paramCheckpointEndpoint, "http://localhost:8000")
-	os.Setenv(paramMaxRetries, "3")
 
 	app := NewApp()
 	checkpointDynamo := dynamodb.New(session.Must(
@@ -322,7 +320,6 @@ func TestAll(t *testing.T) {
 	//main()
 
 	for i := 0; i < len(syncWorkers); i++ {
-		syncWorkers[i].loadCheckpointTable()
 		syncWorkers[i].testStreamSyncWait()
 		syncWorkers[i].testExpireShards()
 	}

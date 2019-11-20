@@ -25,6 +25,9 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
+	"strings"
+
 	//"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/thumbtack/go/lib/metrics"
 	//"github.com/thumbtack/go/lib/monitoring"
@@ -33,7 +36,6 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -49,18 +51,16 @@ const (
 	paramCheckpointTable    = "CHECKPOINT_DDB_TABLE"
 	paramCheckpointRegion   = "CHECKPOINT_DDB_REGION"
 	paramCheckpointEndpoint = "CHECKPOINT_DDB_ENDPOINT"
-	paramMaxRetries         = "MAX_RETRIES"
 	paramVerbose            = "VERBOSE"
 	paramPort               = "PORT"
 	paramConfigDir          = "CONFIG_DIR"
-	defaultConfigMaxRetries = 3
+	maxRetries              = 3
 )
 
 var logger = logging.New()
 var ddbTable = os.Getenv(paramCheckpointTable)
 var ddbRegion = os.Getenv(paramCheckpointRegion)
 var ddbEndpoint = os.Getenv(paramCheckpointEndpoint)
-var maxRetries = defaultConfigMaxRetries
 var ddbClient = ddbConfigConnect(ddbRegion, ddbEndpoint, maxRetries, *logger)
 var metricsClient = newMetricsClient()
 
@@ -73,16 +73,12 @@ type config struct {
 	DstEndpoint               string `json:"dst_endpoint"`
 	SrcEnv                    string `json:"src_env"`
 	DstEnv                    string `json:"dst_env"`
-	SrcAccount                string `json:"src_account"`
-	DstAccount                string `json:"dst_account"`
-	MaxConnectRetries         int    `json:"max_connect_retries"`
 	ReadWorkers               int    `json:"read_workers"`
 	WriteWorkers              int    `json:"write_workers"`
 	ReadQps                   int64  `json:"read_qps"`
 	WriteQps                  int64  `json:"write_qps"`
 	UpdateCheckpointThreshold int    `json:"update_checkpoint_threshold"`
 	EnableStreaming           *bool   `json:"enable_streaming"`
-	TruncateTable             bool   `json:"truncate_table"`
 }
 
 // Config file is read and dumped into this struct
@@ -101,13 +97,8 @@ type syncState struct {
 	timestamp             time.Time
 }
 
-func getRoleArn(env string, account string) (string) {
-	var roleType = ""
-	if strings.ToLower(account) != "admin" {
-		roleType = "NEW_" + strings.ToUpper(env) + "_ROLE"
-	} else {
-		roleType = "OLD_" + strings.ToUpper(env) + "_ROLE"
-	}
+func getRoleArn(env string) string {
+	roleType := strings.ToUpper(env) + "_ROLE"
 	logger.WithFields(logging.Fields{"Roletype": roleType}).Debug()
 	return os.Getenv(roleType)
 }
@@ -130,7 +121,7 @@ func NewSyncState(tableConfig config) *syncState {
 			aws.NewConfig().
 				WithRegion(tableConfig.SrcRegion).
 				WithEndpoint(tableConfig.SrcEndpoint).
-				WithMaxRetries(tableConfig.MaxConnectRetries).
+				WithMaxRetries(maxRetries).
 				WithHTTPClient(httpClient),
 		))
 
@@ -139,10 +130,10 @@ func NewSyncState(tableConfig config) *syncState {
 			aws.NewConfig().
 				WithRegion(tableConfig.DstRegion).
 				WithEndpoint(tableConfig.DstEndpoint).
-				WithMaxRetries(tableConfig.MaxConnectRetries),
+				WithMaxRetries(maxRetries),
 		))
-	srcRoleArn := getRoleArn(tableConfig.SrcEnv, tableConfig.SrcAccount)
-	dstRoleArn := getRoleArn(tableConfig.DstEnv, tableConfig.DstAccount)
+	srcRoleArn := getRoleArn(tableConfig.SrcEnv)
+	dstRoleArn := getRoleArn(tableConfig.DstEnv)
 
 	if srcRoleArn == "" || dstRoleArn == "" {
 		logger.WithFields(logging.Fields{}).
@@ -154,16 +145,12 @@ func NewSyncState(tableConfig config) *syncState {
 		"Src Role Arn": srcRoleArn,
 		"Dst Role Arn": dstRoleArn}).Debug("Role ARN")
 
-	/*srcCreds := stscreds.NewCredentials(srcSess, srcRoleArn)
+	srcCreds := stscreds.NewCredentials(srcSess, srcRoleArn)
 	dstCreds := stscreds.NewCredentials(dstSess, dstRoleArn)
 
 	srcDynamo = dynamodb.New(srcSess, &aws.Config{Credentials: srcCreds})
 	dstDynamo = dynamodb.New(dstSess, &aws.Config{Credentials: dstCreds})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})*/
-
-	srcDynamo = dynamodb.New(srcSess, &aws.Config{})
-	dstDynamo = dynamodb.New(dstSess, &aws.Config{})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{})
+	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})
 
 	return &syncState{
 		tableConfig:           tableConfig,
@@ -238,14 +225,6 @@ func NewApp() *appConfig {
 			logger.SetLevel(logging.DebugLevel)
 		}
 	}
-	if os.Getenv(paramMaxRetries) != "" {
-		maxRetries, err = strconv.Atoi(os.Getenv(paramMaxRetries))
-		if err != nil {
-			logger.WithFields(logging.Fields{
-				"error": err,
-			}).Fatal("Failed to parse " + paramMaxRetries)
-		}
-	}
 
 	configFile = os.Getenv(paramConfigDir) + "/config.json"
 	tableConfig, err := readConfigFile(configFile, *logger)
@@ -298,17 +277,6 @@ func setDefaults(tableConfig []config) ([]config, error) {
 			continue
 		}
 
-		if tableConfig[i].SrcAccount == "" {
-			tableConfig[i].SrcAccount = "admin"
-		}
-
-		if tableConfig[i].DstAccount == "" {
-			tableConfig[i].DstAccount = "admin"
-		}
-
-		if tableConfig[i].MaxConnectRetries == 0 {
-			tableConfig[i].MaxConnectRetries = 3
-		}
 
 		if tableConfig[i].ReadQps == 0 {
 			tableConfig[i].ReadQps = 500
@@ -354,18 +322,22 @@ func (sync *syncState) isFreshStart(key primaryKey) bool {
 	return false
 }
 
-func getPrimaryKey(sync config) (primaryKey) {
+func getPrimaryKey(sync config) primaryKey {
 	key := primaryKey{}
-	if sync.SrcAccount == "admin" {
+	delim := "_"
+
+	if !strings.Contains(sync.SrcEnv, "	new") {
 		key.sourceTable = sync.SrcTable
 	} else {
-		key.sourceTable = sync.SrcTable + ".account." + sync.SrcAccount
+		key.sourceTable = sync.SrcTable + ".account." + strings.Split(sync.SrcEnv, delim)[0]
 	}
-	if sync.DstAccount == "admin" {
+
+	if !strings.Contains(sync.DstEnv, "new") {
 		key.dstTable = sync.DstTable
 	} else {
-		key.dstTable = sync.DstTable + ".account." + sync.DstAccount
+		key.dstTable = sync.DstTable + ".account." + strings.Split(sync.DstEnv, delim)[0]
 	}
+
 	return key
 }
 
@@ -389,8 +361,9 @@ func main() {
 				"Source Table":      key.sourceTable,
 				"Destination Table": key.dstTable,
 			}).Error("Error in connecting to tables. Check config file")
-
+			return
 		}
+
 		syncWorker.readCheckpoint()
 
 		// Call a go routine to replicate for each key

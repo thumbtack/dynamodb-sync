@@ -73,7 +73,10 @@ func (sync *syncState) replicate(quit <-chan bool, key primaryKey) {
 // Once all the workers in the readWorker group are done,
 // we close the channel, and wait for the writeWorker group
 // to finish
-func (state *syncState) copyTable(key primaryKey) (error){
+func (state *syncState) copyTable(key primaryKey) error {
+	var isSourceThroughputChanged = false
+	var isDstThroughputChanged = false
+
 	logger.WithFields(logging.Fields{
 		"Source Table":      key.sourceTable,
 		"Destination Table": key.dstTable,
@@ -84,8 +87,6 @@ func (state *syncState) copyTable(key primaryKey) (error){
 	// we are done copying
 	sourceCapacity := state.getCapacity(state.tableConfig.SrcTable, state.srcDynamo)
 	dstCapacity := state.getCapacity(state.tableConfig.DstTable, state.dstDynamo)
-	var isSourceThroughputChanged = false
-	var isDstThroughputChanged = false
 	srcDynamo := state.srcDynamo
 	dstDynamo := state.dstDynamo
 
@@ -124,14 +125,14 @@ func (state *syncState) copyTable(key primaryKey) (error){
 
 	writerWG.Add(writeWorkers)
 
-	rlDst := rate.NewLimiter(rate.Limit(state.tableConfig.WriteQps), maxBatchSize)
+	rl := rate.NewLimiter(rate.Limit(state.tableConfig.WriteQps), int(state.tableConfig.WriteQps))
 	for i := 0; i < writeWorkers; i++ {
 		logger.WithFields(logging.Fields{
 			"Write Worker":      i,
 			"Source Table":      key.sourceTable,
 			"Destination Table": key.dstTable,
 		}).Debug("Starting copy table write worker..")
-		go state.writeTable(key, items, &writerWG, i, *rlDst)
+		go state.writeTable(key, items, &writerWG, i, rl)
 	}
 	readerWG.Add(readWorkers)
 	for i := 0; i < readWorkers; i++ {
@@ -213,18 +214,16 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 		if lastEvaluatedShardId != "" {
 			input.ExclusiveStartShardId = aws.String(lastEvaluatedShardId)
 		}
-		maxConnectRetries := sync.tableConfig.MaxConnectRetries
 
-		for i := 0; i < maxConnectRetries; i++ {
+		for i := 1; i <= maxRetries; i++ {
 			result, err = sync.stream.DescribeStream(input)
-			if err != nil {
-				if i == maxConnectRetries-1 {
-					return err
-				}
-				backoff(i, "Describe Stream")
-			} else {
+			if err == nil {
 				break
 			}
+			if i == maxRetries {
+				return err
+			}
+			backoff(i, "Describe Stream")
 		}
 
 		numShards += len(result.StreamDescription.Shards)
