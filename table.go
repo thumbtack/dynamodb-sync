@@ -270,14 +270,14 @@ func (sync *syncState) getCapacity(tableName string, dynamo *dynamodb.DynamoDB) 
 			logger.WithFields(logging.Fields{
 				"Error": err,
 				"Table": tableName,
-			}).Debug("Error in reading provisioned throughput")
+			}).Error("Error in reading provisioned throughput")
 		} else {
 			result := output.Table.ProvisionedThroughput
 			logger.WithFields(logging.Fields{
 				"Table": tableName,
 				"Read Capacity":     *result.ReadCapacityUnits,
 				"Write Capacity":    *result.WriteCapacityUnits,
-			}).Debug("Fetched provisioned throughput of table")
+			}).Info("Fetched provisioned throughput of table")
 			return provisionedThroughput{
 				*result.ReadCapacityUnits,
 				*result.WriteCapacityUnits,
@@ -285,7 +285,7 @@ func (sync *syncState) getCapacity(tableName string, dynamo *dynamodb.DynamoDB) 
 		}
 	}
 
-	return provisionedThroughput{0, 0}
+	return provisionedThroughput{-1, -1}
 }
 
 func (sync *syncState) getTableSize(table string, dynamo *dynamodb.DynamoDB) int64 {

@@ -90,7 +90,7 @@ func (state *syncState) copyTable(key primaryKey) error {
 	srcDynamo := state.srcDynamo
 	dstDynamo := state.dstDynamo
 
-	if state.tableConfig.ReadQps > sourceCapacity.readCapacity {
+	if sourceCapacity.readCapacity != 0 && state.tableConfig.ReadQps > sourceCapacity.readCapacity {
 		newCapacity := provisionedThroughput{
 			state.tableConfig.ReadQps,
 			sourceCapacity.writeCapacity,
@@ -104,7 +104,7 @@ func (state *syncState) copyTable(key primaryKey) error {
 		isSourceThroughputChanged = true
 	}
 
-	if state.tableConfig.WriteQps > dstCapacity.writeCapacity {
+	if dstCapacity.writeCapacity != 0 && state.tableConfig.WriteQps > dstCapacity.writeCapacity {
 		newCapacity := provisionedThroughput{
 			dstCapacity.readCapacity,
 			state.tableConfig.WriteQps,
