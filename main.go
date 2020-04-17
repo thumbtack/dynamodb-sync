@@ -43,7 +43,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodbstreams"
-	"github.com/robfig/cron"
 	logging "github.com/sirupsen/logrus"
 )
 
@@ -212,6 +211,7 @@ func newMetricsClient() (client metrics.Client) {
 // app constructor
 func NewApp() *appConfig {
 	logger.SetLevel(logging.InfoLevel)
+	logger.SetFormatter(new(logging.JSONFormatter))
 	var err error
 	var configFile string
 	if os.Getenv(paramVerbose) != "" {
@@ -341,10 +341,6 @@ func getPrimaryKey(sync config) primaryKey {
 	return key
 }
 
-func (sync *syncState) runWeekly(quit <-chan bool, key primaryKey) {
-	sync.replicate(quit, key)
-}
-
 func main() {
 	app := NewApp()
 	quit := make(chan bool)
@@ -367,30 +363,7 @@ func main() {
 		syncWorker.readCheckpoint()
 
 		// Call a go routine to replicate for each key
-
-		// Add a cron job if the schedule is once a week
-		if !*app.sync[i].EnableStreaming {
-			c := cron.New()
-			err := c.AddFunc("0 0 0 * * 5", func() {
-				logger.WithFields(logging.Fields{
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
-				}).Info("Starting cron job")
-				syncWorker.runWeekly(quit, key)
-			})
-			if err != nil {
-				logger.WithFields(logging.Fields{
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
-					"Error":             err,
-				}).Error("Error in replicating. Stopping cron")
-				c.Stop()
-			}
-			c.Start()
-		} else {
-			// Streaming is enabled. Launch a go routine
-			go syncWorker.replicate(quit, key)
-		}
+		go syncWorker.replicate(quit, key)
 	}
 
 	//monitoring.Process(os.Getpid(), metricsClient)
