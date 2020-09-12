@@ -25,21 +25,19 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"strings"
-
-	//"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/thumbtack/go/lib/metrics"
-	//"github.com/thumbtack/go/lib/monitoring"
+	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodbstreams"
@@ -60,8 +58,7 @@ var logger = logging.New()
 var ddbTable = os.Getenv(paramCheckpointTable)
 var ddbRegion = os.Getenv(paramCheckpointRegion)
 var ddbEndpoint = os.Getenv(paramCheckpointEndpoint)
-var ddbClient = ddbConfigConnect(ddbRegion, ddbEndpoint, maxRetries, *logger)
-var metricsClient = newMetricsClient()
+var ddbClient = ddbConfigConnect(ddbRegion, ddbEndpoint, maxRetries, logger)
 
 type config struct {
 	SrcTable                  string `json:"src_table"`
@@ -74,10 +71,10 @@ type config struct {
 	DstEnv                    string `json:"dst_env"`
 	ReadWorkers               int    `json:"read_workers"`
 	WriteWorkers              int    `json:"write_workers"`
-	ReadQps                   int64  `json:"read_qps"`
-	WriteQps                  int64  `json:"write_qps"`
+	ReadQPS                   int64  `json:"read_qps"`
+	WriteQPS                  int64  `json:"write_qps"`
 	UpdateCheckpointThreshold int    `json:"update_checkpoint_threshold"`
-	EnableStreaming           *bool   `json:"enable_streaming"`
+	EnableStreaming           *bool  `json:"enable_streaming"`
 }
 
 // Config file is read and dumped into this struct
@@ -98,23 +95,20 @@ type syncState struct {
 
 func getRoleArn(env string) string {
 	roleType := strings.ToUpper(env) + "_ROLE"
-	logger.WithFields(logging.Fields{"Roletype": roleType}).Debug()
+	logger.Debugf("Roletype: %s", roleType)
 	return os.Getenv(roleType)
 }
 
 // syncState Constructor
 func NewSyncState(tableConfig config) *syncState {
-	var srcDynamo, dstDynamo *dynamodb.DynamoDB
-	var stream *dynamodbstreams.DynamoDBStreams
-
 	tr := &http.Transport{
-		MaxIdleConns:       2048,
-		MaxConnsPerHost:    1024,
+		MaxIdleConns:    2048,
+		MaxConnsPerHost: 1024,
 	}
 	httpClient := &http.Client{
-		Timeout:8*time.Second,
-		Transport:tr}
-
+		Timeout:   8 * time.Second,
+		Transport: tr,
+	}
 	srcSess := session.Must(
 		session.NewSession(
 			aws.NewConfig().
@@ -123,7 +117,6 @@ func NewSyncState(tableConfig config) *syncState {
 				WithMaxRetries(maxRetries).
 				WithHTTPClient(httpClient),
 		))
-
 	dstSess := session.Must(
 		session.NewSession(
 			aws.NewConfig().
@@ -131,25 +124,23 @@ func NewSyncState(tableConfig config) *syncState {
 				WithEndpoint(tableConfig.DstEndpoint).
 				WithMaxRetries(maxRetries),
 		))
+
 	srcRoleArn := getRoleArn(tableConfig.SrcEnv)
 	dstRoleArn := getRoleArn(tableConfig.DstEnv)
-
 	if srcRoleArn == "" || dstRoleArn == "" {
-		logger.WithFields(logging.Fields{}).
-			Error("Unable to get RoleArn. " +
-				"Check config file for env fields")
+		logger.Error("Unable to get RoleArn. Check config file for env fields")
 		return nil
 	}
 	logger.WithFields(logging.Fields{
 		"Src Role Arn": srcRoleArn,
-		"Dst Role Arn": dstRoleArn}).Debug("Role ARN")
+		"Dst Role Arn": dstRoleArn,
+	}).Debug("Role ARN")
 
 	srcCreds := stscreds.NewCredentials(srcSess, srcRoleArn)
 	dstCreds := stscreds.NewCredentials(dstSess, dstRoleArn)
-
-	srcDynamo = dynamodb.New(srcSess, &aws.Config{Credentials: srcCreds})
-	dstDynamo = dynamodb.New(dstSess, &aws.Config{Credentials: dstCreds})
-	stream = dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})
+	srcDynamo := dynamodb.New(srcSess, &aws.Config{Credentials: srcCreds})
+	dstDynamo := dynamodb.New(dstSess, &aws.Config{Credentials: dstCreds})
+	stream := dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})
 
 	return &syncState{
 		tableConfig:           tableConfig,
@@ -157,20 +148,19 @@ func NewSyncState(tableConfig config) *syncState {
 		dstDynamo:             dstDynamo,
 		stream:                stream,
 		completedShardLock:    sync.RWMutex{},
-		activeShardProcessors: make(map[string]bool, 0),
+		activeShardProcessors: map[string]bool{},
 		activeShardLock:       sync.RWMutex{},
 		checkpointLock:        sync.RWMutex{},
 		recordCounter:         0,
-		checkpoint:            make(map[string]string, 0),
-		expiredShards:         make(map[string]bool, 0),
+		checkpoint:            map[string]string{},
+		expiredShards:         map[string]bool{},
 		timestamp:             time.Time{},
 	}
-
 }
 
 type appConfig struct {
-	sync          []config
-	verbose       bool
+	sync    []config
+	verbose bool
 }
 
 // The primary key of the Checkpoint ddb table, of the stream etc
@@ -188,8 +178,12 @@ type provisionedThroughput struct {
 }
 
 // Creates dynamodb connection with the global checkpoint table
-func ddbConfigConnect(region string, endpoint string, maxRetries int, logger logging.Logger) *dynamodb.DynamoDB {
-	logger.WithFields(logging.Fields{}).Debug("Connecting to checkpoint table")
+func ddbConfigConnect(
+	region, endpoint string,
+	maxRetries int,
+	logger *logging.Logger,
+) *dynamodb.DynamoDB {
+	logger.Debug("Connecting to checkpoint table")
 	return dynamodb.New(session.Must(
 		session.NewSession(
 			aws.NewConfig().
@@ -199,35 +193,23 @@ func ddbConfigConnect(region string, endpoint string, maxRetries int, logger log
 		)))
 }
 
-func newMetricsClient() (client metrics.Client) {
-	client, err := metrics.NewAlfredAppClient()
-	if err != nil {
-		logger.WithFields(logging.Fields{"Error":err}).Error("Error in initializing metrics")
-		os.Exit(1)
-	}
-	return client
-}
-
 // app constructor
 func NewApp() *appConfig {
 	logger.SetLevel(logging.InfoLevel)
 	logger.SetFormatter(new(logging.JSONFormatter))
-	var err error
-	var configFile string
+
 	if os.Getenv(paramVerbose) != "" {
 		verbose, err := strconv.Atoi(os.Getenv(paramVerbose))
 		if err != nil {
-			logger.WithFields(logging.Fields{
-				"error": err,
-			}).Fatal("Failed to parse " + paramVerbose)
+			logger.Fatalf("Failed to parse %s: %v", paramVerbose, err)
 		}
 		if verbose != 0 {
 			logger.SetLevel(logging.DebugLevel)
 		}
 	}
 
-	configFile = os.Getenv(paramConfigDir) + "/config.json"
-	tableConfig, err := readConfigFile(configFile, *logger)
+	configFile := os.Getenv(paramConfigDir) + "/config.json"
+	tableConfig, err := readConfigFile(configFile, logger)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -239,119 +221,95 @@ func NewApp() *appConfig {
 	}
 
 	return &appConfig{
-		sync:          tableConfig,
-		verbose:       true,
+		sync:    tableConfig,
+		verbose: true,
 	}
 }
 
 // Helper function to read the config file
-func readConfigFile(configFile string, logger logging.Logger) ([]config, error) {
-	var listStreamConfig []config
-	logger.WithFields(logging.Fields{
-		"path": configFile,
-	}).Debug("Reading config file")
-	data, err := ioutil.ReadFile(configFile)
-	if err != nil {
-		return listStreamConfig, err
-	}
-	err = json.Unmarshal(data, &listStreamConfig)
-	if err != nil {
-		return listStreamConfig, errors.New("failed to unmarshal config")
-	}
+func readConfigFile(
+	configFile string,
+	logger *logging.Logger,
+) (listStreamConfig []config, err error) {
+	logger.Debugf("Reading config file from %s", configFile)
 
-	return listStreamConfig, nil
+	var data []byte
+	data, err = ioutil.ReadFile(configFile)
+	if err != nil {
+		return
+	}
+	if err = json.Unmarshal(data, &listStreamConfig); err != nil {
+		return listStreamConfig, fmt.Errorf("failed to unmarshal config: %v", err)
+	}
+	return
 }
 
-// TODO: it would be better to start by assigning defaults and then overriding with the contents of the config file, no?
 func setDefaults(tableConfig []config) ([]config, error) {
-	var err error = nil
-	for i := 0; i < len(tableConfig); i++ {
-		if tableConfig[i].SrcTable == "" ||
-			tableConfig[i].DstTable == "" ||
-			tableConfig[i].SrcRegion == "" ||
-			tableConfig[i].DstRegion == "" ||
-			tableConfig[i].SrcEnv == "" ||
-			tableConfig[i].DstEnv == "" {
-			err = errors.New("invalid JSON: source and destination table " +
+	for i, config := range tableConfig {
+		if config.SrcTable == "" || config.DstTable == "" || config.SrcRegion == "" ||
+			config.DstRegion == "" || config.SrcEnv == "" || config.DstEnv == "" {
+			return nil, errors.New("invalid JSON: source and destination table " +
 				"and region are mandatory")
-			continue
 		}
-
-
-		if tableConfig[i].ReadQps == 0 {
-			tableConfig[i].ReadQps = 500
+		if config.ReadQPS == 0 {
+			tableConfig[i].ReadQPS = 500
 		}
-
-		if tableConfig[i].WriteQps == 0 {
-			tableConfig[i].WriteQps = 500
+		if config.WriteQPS == 0 {
+			tableConfig[i].WriteQPS = 500
 		}
-
-		if tableConfig[i].ReadWorkers == 0 {
+		if config.ReadWorkers == 0 {
 			tableConfig[i].ReadWorkers = 4
 		}
-
-		if tableConfig[i].WriteWorkers == 0 {
+		if config.WriteWorkers == 0 {
 			tableConfig[i].WriteWorkers = 5
 		}
-
-		if tableConfig[i].UpdateCheckpointThreshold == 0 {
+		if config.UpdateCheckpointThreshold == 0 {
 			tableConfig[i].UpdateCheckpointThreshold = 25
 		}
-
-		if tableConfig[i].EnableStreaming == nil {
+		if config.EnableStreaming == nil {
 			val := true
 			tableConfig[i].EnableStreaming = &val
 		}
 	}
-
-	return tableConfig, err
+	return tableConfig, nil
 }
 
 // If the state has no timestamp, or if the timestamp
 // is more than 24 hours old, returns True. Else, False
-func (sync *syncState) isFreshStart(key primaryKey) bool {
+func (ss *syncState) isFreshStart(key primaryKey) bool {
 	logger.WithFields(logging.Fields{
 		"Source Table":      key.sourceTable,
 		"Destination Table": key.dstTable,
-		"State Timestamp":   sync.timestamp,
+		"State Timestamp":   ss.timestamp,
 	}).Info("Checking if fresh start")
-	if sync.timestamp.IsZero() ||
-		time.Now().Sub(sync.timestamp) > streamRetentionHours {
-		return true
-	}
-	return false
+	return ss.timestamp.IsZero() || time.Now().Sub(ss.timestamp) > streamRetentionHours
 }
 
 func getPrimaryKey(sync config) primaryKey {
-	key := primaryKey{}
-	delim := "_"
-
-	if !strings.Contains(sync.SrcEnv, "	new") {
-		key.sourceTable = sync.SrcTable
-	} else {
-		key.sourceTable = sync.SrcTable + ".account." + strings.Split(sync.SrcEnv, delim)[0]
+	key := primaryKey{
+		sourceTable: sync.SrcTable,
+		dstTable:    sync.DstTable,
 	}
-
-	if !strings.Contains(sync.DstEnv, "new") {
-		key.dstTable = sync.DstTable
-	} else {
-		key.dstTable = sync.DstTable + ".account." + strings.Split(sync.DstEnv, delim)[0]
+	if strings.Contains(sync.SrcEnv, "	new") {
+		key.sourceTable += ".account." + strings.Split(sync.SrcEnv, "_")[0]
 	}
-
+	if strings.Contains(sync.DstEnv, "new") {
+		key.dstTable += ".account." + strings.Split(sync.DstEnv, "_")[0]
+	}
 	return key
 }
 
 func main() {
 	app := NewApp()
 	quit := make(chan bool)
-	for i := 0; i < len(app.sync); i++ {
-		key := getPrimaryKey(app.sync[i])
+	for _, config := range app.sync {
+		key := getPrimaryKey(config)
 		logger.WithFields(logging.Fields{
 			"Source Table":      key.sourceTable,
 			"Destination Table": key.dstTable,
 		}).Info("Launching replicate")
 
-		syncWorker := NewSyncState(app.sync[i])
+		syncWorker := NewSyncState(config)
 		if syncWorker == nil {
 			logger.WithFields(logging.Fields{
 				"Source Table":      key.sourceTable,
@@ -366,8 +324,12 @@ func main() {
 		go syncWorker.replicate(quit, key)
 	}
 
-	//monitoring.Process(os.Getpid(), metricsClient)
-
 	http.HandleFunc("/", syncResponder())
-	http.ListenAndServe(":"+os.Getenv(paramPort), nil)
+	_ = http.ListenAndServe(":"+os.Getenv(paramPort), nil)
+}
+
+func syncResponder() http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = io.WriteString(writer, "Hey there, I'm syncing")
+	}
 }

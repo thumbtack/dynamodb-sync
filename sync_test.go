@@ -96,11 +96,11 @@ func (app *appConfig) createCheckpointTable(checkpointDynamo *dynamodb.DynamoDB)
 	}
 }
 
-func setupTest(sync *syncState, key primaryKey) {
+func setupTest(ss *syncState, key primaryKey) {
 	var err error
 
 	table := [2]string{key.sourceTable, key.dstTable}
-	dynamo := [2]*dynamodb.DynamoDB{sync.srcDynamo, sync.dstDynamo}
+	dynamo := [2]*dynamodb.DynamoDB{ss.srcDynamo, ss.dstDynamo}
 	for i, name := range table {
 		logger.WithFields(logging.Fields{
 			"Table Name": name,
@@ -133,7 +133,7 @@ func setupTest(sync *syncState, key primaryKey) {
 	}
 }
 
-func (sync *syncState) scanTable(key primaryKey, name string) {
+func (ss *syncState) scanTable(key primaryKey, name string) {
 	lastEvaluatedKey := make(map[string]*dynamodb.AttributeValue, 0)
 	items := make([]map[string]*dynamodb.AttributeValue, 0)
 	input := &dynamodb.ScanInput{TableName: aws.String(name)}
@@ -143,7 +143,7 @@ func (sync *syncState) scanTable(key primaryKey, name string) {
 			input.ExclusiveStartKey = lastEvaluatedKey
 		}
 		for i := 1; i <= maxRetries; i++ {
-			result, err := sync.srcDynamo.Scan(input)
+			result, err := ss.srcDynamo.Scan(input)
 			if err != nil {
 				if i == maxRetries {
 					return
@@ -164,10 +164,10 @@ func (sync *syncState) scanTable(key primaryKey, name string) {
 	}
 }
 
-func (sync *syncState) teardown(key primaryKey) {
+func (ss *syncState) teardown(key primaryKey) {
 	table := [2]string{key.sourceTable, key.dstTable}
-	dynamo := [2]*dynamodb.DynamoDB{sync.srcDynamo,
-		sync.dstDynamo}
+	dynamo := [2]*dynamodb.DynamoDB{ss.srcDynamo,
+		ss.dstDynamo}
 
 	for i, name := range table {
 		logger.WithFields(logging.Fields{
@@ -225,7 +225,7 @@ func deleteCheckpointTable(checkpointDynamo *dynamodb.DynamoDB) {
 	}
 }
 
-func (sync *syncState) continuousWrite(quit <-chan bool, key primaryKey) {
+func (ss *syncState) continuousWrite(quit <-chan bool, key primaryKey) {
 	i := 10
 
 	for {
@@ -239,7 +239,7 @@ func (sync *syncState) continuousWrite(quit <-chan bool, key primaryKey) {
 					partitionKey: {N: aws.String(strconv.FormatInt(int64(i), 10))},
 				},
 			}
-			_, err := sync.srcDynamo.PutItem(input)
+			_, err := ss.srcDynamo.PutItem(input)
 			if err != nil {
 				logger.WithFields(logging.Fields{
 					"Error": err,
@@ -251,31 +251,31 @@ func (sync *syncState) continuousWrite(quit <-chan bool, key primaryKey) {
 	}
 }
 
-func (sync *syncState) testStreamSyncWait() {
+func (ss *syncState) testStreamSyncWait() {
 	quit := make(chan bool)
 	quit2 := make(chan bool)
-	k := primaryKey{sync.tableConfig.SrcTable, sync.tableConfig.DstTable}
-	go sync.continuousWrite(quit, k)
-	go sync.replicate(quit2, k)
+	k := primaryKey{ss.tableConfig.SrcTable, ss.tableConfig.DstTable}
+	go ss.continuousWrite(quit, k)
+	go ss.replicate(quit2, k)
 	// Allow some time to sync
 	time.Sleep(5 * time.Second)
 	// Stop writing
 	quit <- true
 	// Wait for some time
 	time.Sleep(5 * time.Second)
-	// Continue writing once again, does the stream sync resume?
-	go sync.continuousWrite(quit, k)
+	// Continue writing once again, does the stream ss resume?
+	go ss.continuousWrite(quit, k)
 	time.Sleep(5 * time.Second)
 	quit <- true
 	// Block on streamSync
 	<-quit2
 }
 
-func (sync *syncState) testExpireShards() {
-	for random, _ := range sync.checkpoint {
-		k := primaryKey{sync.tableConfig.SrcTable, sync.tableConfig.DstTable}
-		sync.expireCheckpointLocal(k, aws.String(random))
-		sync.expireCheckpointRemote(k, random)
+func (ss *syncState) testExpireShards() {
+	for random, _ := range ss.checkpoint {
+		k := primaryKey{ss.tableConfig.SrcTable, ss.tableConfig.DstTable}
+		ss.expireCheckpointLocal(k, aws.String(random))
+		ss.expireCheckpointRemote(k, random)
 		break
 	}
 }
@@ -286,7 +286,7 @@ func TestAll(t *testing.T) {
 	os.Setenv(paramConfigDir, "local")
 	os.Setenv(paramVerbose, "1")
 	os.Setenv(paramCheckpointRegion, "us-west-2")
-	os.Setenv(paramCheckpointTable, "local-dynamodb-sync.checkpoint")
+	os.Setenv(paramCheckpointTable, "local-dynamodb-ss.checkpoint")
 	os.Setenv(paramCheckpointEndpoint, "http://localhost:8000")
 
 	app := NewApp()
