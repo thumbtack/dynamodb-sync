@@ -1,0 +1,34 @@
+[
+  {
+    "src_table": "src1",
+    "dst_table": "dst1",
+    "src_region": "us-west-2",
+    "dst_region": "us-west-2",
+    "src_endpoint": "http://localhost:8000",
+    "dst_endpoint": "http://localhost:8000",
+    "src_env": "production",
+    "dst_env": "staging",
+    "max_connect_retries": 3,
+    "read_workers": 4,
+    "write_workers": 5,
+    "read_qps": 1000,
+    "write_qps": 1000,
+    "update_checkpoint_threshold": 10
+  },
+  {
+    "src_table": "src2",
+    "dst_table": "dst2",
+    "src_region": "us-west-2",
+    "dst_region": "us-west-2",
+    "src_endpoint": "http://localhost:8000",
+    "dst_endpoint": "http://localhost:8000",
+    "src_env": "production",
+    "dst_env": "staging",
+    "max_connect_retries": 3,
+    "read_workers": 4,
+    "write_workers": 4,
+    "read_qps": 2000,
+    "write_qps": 500,
+    "update_checkpoint_threshold": 10
+  }
+]
