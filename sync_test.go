@@ -35,7 +35,7 @@ var throughput = &dynamodb.ProvisionedThroughput{
 	WriteCapacityUnits: aws.Int64(int64(10000)),
 }
 
-var checkpoint_throughput = &dynamodb.ProvisionedThroughput{
+var checkpointThroughput = &dynamodb.ProvisionedThroughput{
 	ReadCapacityUnits:  aws.Int64(int64(10)),
 	WriteCapacityUnits: aws.Int64(int64(10)),
 }
@@ -62,7 +62,10 @@ var cpAttributeDefinitions = []*dynamodb.AttributeDefinition{
 	},
 }
 
-var streamSpec = &dynamodb.StreamSpecification{StreamEnabled: aws.Bool(true), StreamViewType: aws.String("NEW_AND_OLD_IMAGES")}
+var streamSpec = &dynamodb.StreamSpecification{
+	StreamEnabled:  aws.Bool(true),
+	StreamViewType: aws.String("NEW_AND_OLD_IMAGES"),
+}
 
 func (app *appConfig) createCheckpointTable(checkpointDynamo *dynamodb.DynamoDB) {
 	logger.WithFields(logging.Fields{
@@ -72,7 +75,7 @@ func (app *appConfig) createCheckpointTable(checkpointDynamo *dynamodb.DynamoDB)
 		TableName:             aws.String(os.Getenv(paramCheckpointTable)),
 		KeySchema:             checkPointKeySchema,
 		AttributeDefinitions:  cpAttributeDefinitions,
-		ProvisionedThroughput: checkpoint_throughput,
+		ProvisionedThroughput: checkpointThroughput,
 	})
 
 	if err != nil {
@@ -133,7 +136,7 @@ func setupTest(ss *syncState, key primaryKey) {
 	}
 }
 
-func (ss *syncState) scanTable(key primaryKey, name string) {
+func (ss *syncState) scanTable(name string) {
 	lastEvaluatedKey := make(map[string]*dynamodb.AttributeValue, 0)
 	items := make([]map[string]*dynamodb.AttributeValue, 0)
 	input := &dynamodb.ScanInput{TableName: aws.String(name)}
@@ -272,7 +275,7 @@ func (ss *syncState) testStreamSyncWait() {
 }
 
 func (ss *syncState) testExpireShards() {
-	for random, _ := range ss.checkpoint {
+	for random := range ss.checkpoint {
 		k := primaryKey{ss.tableConfig.SrcTable, ss.tableConfig.DstTable}
 		ss.expireCheckpointLocal(k, aws.String(random))
 		ss.expireCheckpointRemote(k, random)
@@ -283,11 +286,11 @@ func (ss *syncState) testExpireShards() {
 func TestAll(t *testing.T) {
 	print("Starting test")
 	//var err error
-	os.Setenv(paramConfigDir, "local")
-	os.Setenv(paramVerbose, "1")
-	os.Setenv(paramCheckpointRegion, "us-west-2")
-	os.Setenv(paramCheckpointTable, "local-dynamodb-ss.checkpoint")
-	os.Setenv(paramCheckpointEndpoint, "http://localhost:8000")
+	_ = os.Setenv(paramConfigDir, "local")
+	_ = os.Setenv(paramVerbose, "1")
+	_ = os.Setenv(paramCheckpointRegion, "us-west-2")
+	_ = os.Setenv(paramCheckpointTable, "local-dynamodb-ss.checkpoint")
+	_ = os.Setenv(paramCheckpointEndpoint, "http://localhost:8000")
 
 	app := NewApp()
 	checkpointDynamo := dynamodb.New(session.Must(
