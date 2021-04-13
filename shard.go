@@ -1,21 +1,10 @@
 package main
 
 import (
-	"time"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodbstreams"
 	logging "github.com/sirupsen/logrus"
 )
-
-func backoff(i int, s string) {
-	wait := 1 << i
-	logger.WithFields(logging.Fields{
-		"Backoff Caller":        s,
-		"Backoff Time(seconds)": wait,
-	}).Info("Backing off")
-	time.Sleep(time.Duration(wait) * time.Second)
-}
 
 // Check if a shard is already processed
 func (ss *syncState) isShardProcessed(key primaryKey, shardId *string) bool {
