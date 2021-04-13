@@ -38,7 +38,6 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodbstreams"
 	logging "github.com/sirupsen/logrus"
@@ -54,11 +53,13 @@ const (
 	maxRetries              = 3
 )
 
-var logger = logging.New()
-var ddbTable = os.Getenv(paramCheckpointTable)
-var ddbRegion = os.Getenv(paramCheckpointRegion)
-var ddbEndpoint = os.Getenv(paramCheckpointEndpoint)
-var ddbClient = ddbConfigConnect(ddbRegion, ddbEndpoint, maxRetries, logger)
+var (
+	logger      = logging.New()
+	ddbTable    = os.Getenv(paramCheckpointTable)
+	ddbRegion   = os.Getenv(paramCheckpointRegion)
+	ddbEndpoint = os.Getenv(paramCheckpointEndpoint)
+	ddbClient   = dynamodb.New(getSession(ddbRegion, ddbEndpoint, nil))
+)
 
 type config struct {
 	SrcTable                  string `json:"src_table"`
@@ -93,44 +94,19 @@ type syncState struct {
 	timestamp             time.Time
 }
 
-func getRoleArn(env string) string {
-	roleType := strings.ToUpper(env) + "_ROLE"
-	logger.Debugf("Roletype: %s", roleType)
-	return os.Getenv(roleType)
-}
-
 // syncState Constructor
 func NewSyncState(tableConfig config) *syncState {
-	tr := &http.Transport{
-		MaxIdleConns:    2048,
-		MaxConnsPerHost: 1024,
-	}
 	httpClient := &http.Client{
-		Timeout:   8 * time.Second,
-		Transport: tr,
+		Timeout: 8 * time.Second,
+		Transport: &http.Transport{
+			MaxIdleConns:    2048,
+			MaxConnsPerHost: 1024,
+		},
 	}
-	srcSess := session.Must(
-		session.NewSession(
-			aws.NewConfig().
-				WithRegion(tableConfig.SrcRegion).
-				WithEndpoint(tableConfig.SrcEndpoint).
-				WithMaxRetries(maxRetries).
-				WithHTTPClient(httpClient),
-		))
-	dstSess := session.Must(
-		session.NewSession(
-			aws.NewConfig().
-				WithRegion(tableConfig.DstRegion).
-				WithEndpoint(tableConfig.DstEndpoint).
-				WithMaxRetries(maxRetries),
-		))
-
+	srcSess := getSession(tableConfig.SrcRegion, tableConfig.SrcEndpoint, httpClient)
+	dstSess := getSession(tableConfig.DstRegion, tableConfig.DstEndpoint, nil)
 	srcRoleArn := getRoleArn(tableConfig.SrcEnv)
 	dstRoleArn := getRoleArn(tableConfig.DstEnv)
-	if srcRoleArn == "" || dstRoleArn == "" {
-		logger.Error("Unable to get RoleArn. Check config file for env fields")
-		return nil
-	}
 	logger.WithFields(logging.Fields{
 		"Src Role Arn": srcRoleArn,
 		"Dst Role Arn": dstRoleArn,
@@ -175,22 +151,6 @@ type primaryKey struct {
 type provisionedThroughput struct {
 	readCapacity  int64
 	writeCapacity int64
-}
-
-// Creates dynamodb connection with the global checkpoint table
-func ddbConfigConnect(
-	region, endpoint string,
-	maxRetries int,
-	logger *logging.Logger,
-) *dynamodb.DynamoDB {
-	logger.Debug("Connecting to checkpoint table")
-	return dynamodb.New(session.Must(
-		session.NewSession(
-			aws.NewConfig().
-				WithRegion(region).
-				WithEndpoint(endpoint).
-				WithMaxRetries(maxRetries),
-		)))
 }
 
 // app constructor
