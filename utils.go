@@ -8,16 +8,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/sirupsen/logrus"
 )
 
 func backoff(exp int, caller string) {
-	wait := 1 << exp
-	logger.WithFields(logrus.Fields{
-		"caller":      caller,
-		"time in sec": wait,
-	}).Info("backoff")
-	time.Sleep(time.Duration(wait) * time.Second)
+	time.Sleep(time.Duration(1<<exp) * time.Second)
 }
 
 func getRoleArn(env string) string {
