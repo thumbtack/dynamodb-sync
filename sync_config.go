@@ -23,6 +23,17 @@ type syncConfig struct {
 	EnableStreaming           *bool  `json:"enable_streaming"`
 }
 
+func MockSyncConfig() *syncConfig {
+	return &syncConfig{
+		SrcTable: "src-table",
+		DstTable: "dst-table",
+		SrcRegion: "us-west-2",
+		DstRegion: "us-west-2",
+		SrcEnv: "production",
+		DstEnv: "staging",
+	}
+}
+
 func (sc *syncConfig) setDefault() error {
 	if sc.SrcTable == "" || sc.DstTable == "" || sc.SrcRegion == "" ||
 		sc.DstRegion == "" || sc.SrcEnv == "" || sc.DstEnv == "" {
