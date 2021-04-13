@@ -24,7 +24,6 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -32,7 +31,6 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -61,26 +59,9 @@ var (
 	ddbClient   = dynamodb.New(getSession(ddbRegion, ddbEndpoint, nil))
 )
 
-type config struct {
-	SrcTable                  string `json:"src_table"`
-	DstTable                  string `json:"dst_table"`
-	SrcRegion                 string `json:"src_region"`
-	DstRegion                 string `json:"dst_region"`
-	SrcEndpoint               string `json:"src_endpoint"`
-	DstEndpoint               string `json:"dst_endpoint"`
-	SrcEnv                    string `json:"src_env"`
-	DstEnv                    string `json:"dst_env"`
-	ReadWorkers               int    `json:"read_workers"`
-	WriteWorkers              int    `json:"write_workers"`
-	ReadQPS                   int64  `json:"read_qps"`
-	WriteQPS                  int64  `json:"write_qps"`
-	UpdateCheckpointThreshold int    `json:"update_checkpoint_threshold"`
-	EnableStreaming           *bool  `json:"enable_streaming"`
-}
-
 // Config file is read and dumped into this struct
 type syncState struct {
-	tableConfig           config
+	tableConfig           syncConfig
 	srcDynamo             *dynamodb.DynamoDB
 	dstDynamo             *dynamodb.DynamoDB
 	stream                *dynamodbstreams.DynamoDBStreams
@@ -95,7 +76,7 @@ type syncState struct {
 }
 
 // syncState Constructor
-func NewSyncState(tableConfig config) *syncState {
+func NewSyncState(tableConfig syncConfig) *syncState {
 	httpClient := &http.Client{
 		Timeout: 8 * time.Second,
 		Transport: &http.Transport{
@@ -135,8 +116,7 @@ func NewSyncState(tableConfig config) *syncState {
 }
 
 type appConfig struct {
-	sync    []config
-	verbose bool
+	sync []*syncConfig
 }
 
 // The primary key of the Checkpoint ddb table, of the stream etc
@@ -169,20 +149,19 @@ func NewApp() *appConfig {
 	}
 
 	configFile := os.Getenv(paramConfigDir) + "/config.json"
-	tableConfig, err := readConfigFile(configFile, logger)
+	syncConfigs, err := readConfigFile(configFile, logger)
 	if err != nil {
 		os.Exit(1)
 	}
 
-	tableConfig, err = setDefaults(tableConfig)
-	if err != nil {
-		logger.WithFields(logging.Fields{"Error": err}).Debug("Error in config file values")
-		os.Exit(1)
+	for _, config := range syncConfigs {
+		if err := config.setDefault(); err != nil {
+			logger.Fatalf("failed to set default: %v", err)
+		}
 	}
 
 	return &appConfig{
-		sync:    tableConfig,
-		verbose: true,
+		sync: syncConfigs,
 	}
 }
 
@@ -190,7 +169,7 @@ func NewApp() *appConfig {
 func readConfigFile(
 	configFile string,
 	logger *logging.Logger,
-) (listStreamConfig []config, err error) {
+) (listStreamConfig []*syncConfig, err error) {
 	logger.Debugf("Reading config file from %s", configFile)
 
 	var data []byte
@@ -204,36 +183,6 @@ func readConfigFile(
 	return
 }
 
-func setDefaults(tableConfig []config) ([]config, error) {
-	for i, config := range tableConfig {
-		if config.SrcTable == "" || config.DstTable == "" || config.SrcRegion == "" ||
-			config.DstRegion == "" || config.SrcEnv == "" || config.DstEnv == "" {
-			return nil, errors.New("invalid JSON: source and destination table " +
-				"and region are mandatory")
-		}
-		if config.ReadQPS == 0 {
-			tableConfig[i].ReadQPS = 500
-		}
-		if config.WriteQPS == 0 {
-			tableConfig[i].WriteQPS = 500
-		}
-		if config.ReadWorkers == 0 {
-			tableConfig[i].ReadWorkers = 4
-		}
-		if config.WriteWorkers == 0 {
-			tableConfig[i].WriteWorkers = 5
-		}
-		if config.UpdateCheckpointThreshold == 0 {
-			tableConfig[i].UpdateCheckpointThreshold = 25
-		}
-		if config.EnableStreaming == nil {
-			val := true
-			tableConfig[i].EnableStreaming = &val
-		}
-	}
-	return tableConfig, nil
-}
-
 // If the state has no timestamp, or if the timestamp
 // is more than 24 hours old, returns True. Else, False
 func (ss *syncState) isFreshStart(key primaryKey) bool {
@@ -245,31 +194,17 @@ func (ss *syncState) isFreshStart(key primaryKey) bool {
 	return ss.timestamp.IsZero() || time.Now().Sub(ss.timestamp) > streamRetentionHours
 }
 
-func getPrimaryKey(sync config) primaryKey {
-	key := primaryKey{
-		sourceTable: sync.SrcTable,
-		dstTable:    sync.DstTable,
-	}
-	if strings.Contains(sync.SrcEnv, "	new") {
-		key.sourceTable += ".account." + strings.Split(sync.SrcEnv, "_")[0]
-	}
-	if strings.Contains(sync.DstEnv, "new") {
-		key.dstTable += ".account." + strings.Split(sync.DstEnv, "_")[0]
-	}
-	return key
-}
-
 func main() {
 	app := NewApp()
 	quit := make(chan bool)
 	for _, config := range app.sync {
-		key := getPrimaryKey(config)
+		key := config.getCheckpointPK()
 		logger.WithFields(logging.Fields{
 			"Source Table":      key.sourceTable,
 			"Destination Table": key.dstTable,
 		}).Info("Launching replicate")
 
-		syncWorker := NewSyncState(config)
+		syncWorker := NewSyncState(*config)
 		if syncWorker == nil {
 			logger.WithFields(logging.Fields{
 				"Source Table":      key.sourceTable,
