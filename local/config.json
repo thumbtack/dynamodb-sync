@@ -10,9 +10,9 @@
     "dst_env": "staging",
     "max_connect_retries": 3,
     "read_workers": 4,
-    "write_workers": 5,
-    "read_qps": 1000,
-    "write_qps": 1000,
+    "write_workers": 4,
+    "read_qps": 100,
+    "write_qps": 100,
     "update_checkpoint_threshold": 10
   },
   {
@@ -23,12 +23,12 @@
     "src_endpoint": "http://localhost:8000",
     "dst_endpoint": "http://localhost:8000",
     "src_env": "production",
-    "dst_env": "staging",
+    "dst_env": "development",
     "max_connect_retries": 3,
     "read_workers": 4,
     "write_workers": 4,
-    "read_qps": 2000,
-    "write_qps": 500,
+    "read_qps": 200,
+    "write_qps": 100,
     "update_checkpoint_threshold": 10
   }
 ]
