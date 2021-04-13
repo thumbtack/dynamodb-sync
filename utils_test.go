@@ -39,7 +39,7 @@ func TestBackoff(t *testing.T) {
 		duration := time.Since(start).Seconds()
 
 		cond := duration >= test.expect && duration <= test.expect*1.05
-		assert.Truef(t, cond, "%d failed", test.name)
+		assert.Truef(t, cond, "%s failed", test.name)
 	}
 }
 
