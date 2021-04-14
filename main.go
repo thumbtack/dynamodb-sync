@@ -23,6 +23,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	_ "net/http/pprof"
@@ -131,8 +132,8 @@ type provisionedThroughput struct {
 	writeCapacity int64
 }
 
-// app constructor
-func NewApp() *appConfig {
+// NewApp sets up the app configuration
+func NewApp() (*appConfig, error) {
 	logger.SetLevel(logging.InfoLevel)
 	logger.SetFormatter(new(logging.JSONFormatter))
 
@@ -149,21 +150,25 @@ func NewApp() *appConfig {
 	configFile := os.Getenv(paramConfigDir) + "/config.json"
 	syncConfigs, err := parseConfigFile(configFile)
 	if err != nil {
-		logger.Fatalf("failed to parse config file: %v", err)
+		return nil, fmt.Errorf("failed to parse config file: %v", err)
 	}
 	for _, config := range syncConfigs {
 		if err := config.setDefault(); err != nil {
-			logger.Fatalf("failed to set default: %v", err)
+			return nil, fmt.Errorf("failed to set default: %v", err)
 		}
 	}
 
 	return &appConfig{
 		sync: syncConfigs,
-	}
+	}, nil
 }
 
 func main() {
-	app := NewApp()
+	app, err := NewApp()
+	if err != nil {
+		logger.Errorf("failed to initialize the app: %v", err)
+		os.Exit(1)
+	}
 	quit := make(chan bool)
 	for _, config := range app.sync {
 		key := config.getCheckpointPK()
@@ -182,7 +187,6 @@ func main() {
 		}
 
 		syncWorker.readCheckpoint()
-
 		// Call a go routine to replicate for each key
 		go syncWorker.replicate(quit, key)
 	}
