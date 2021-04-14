@@ -23,10 +23,7 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -42,13 +39,14 @@ import (
 )
 
 const (
+	paramVerbose   = "VERBOSE"
+	paramPort      = "PORT"
+	paramConfigDir = "CONFIG_DIR"
+	maxRetries     = 3
+
 	paramCheckpointTable    = "CHECKPOINT_DDB_TABLE"
 	paramCheckpointRegion   = "CHECKPOINT_DDB_REGION"
 	paramCheckpointEndpoint = "CHECKPOINT_DDB_ENDPOINT"
-	paramVerbose            = "VERBOSE"
-	paramPort               = "PORT"
-	paramConfigDir          = "CONFIG_DIR"
-	maxRetries              = 3
 )
 
 var (
@@ -138,10 +136,10 @@ func NewApp() *appConfig {
 	logger.SetLevel(logging.InfoLevel)
 	logger.SetFormatter(new(logging.JSONFormatter))
 
-	if os.Getenv(paramVerbose) != "" {
-		verbose, err := strconv.Atoi(os.Getenv(paramVerbose))
+	if verboseStr := os.Getenv(paramVerbose); verboseStr != "" {
+		verbose, err := strconv.Atoi(verboseStr)
 		if err != nil {
-			logger.Fatalf("Failed to parse %s: %v", paramVerbose, err)
+			logger.Warnf("failed to parse %s: %v", paramVerbose, err)
 		}
 		if verbose != 0 {
 			logger.SetLevel(logging.DebugLevel)
@@ -149,11 +147,10 @@ func NewApp() *appConfig {
 	}
 
 	configFile := os.Getenv(paramConfigDir) + "/config.json"
-	syncConfigs, err := readConfigFile(configFile, logger)
+	syncConfigs, err := parseConfigFile(configFile)
 	if err != nil {
-		os.Exit(1)
+		logger.Fatalf("failed to parse config file: %v", err)
 	}
-
 	for _, config := range syncConfigs {
 		if err := config.setDefault(); err != nil {
 			logger.Fatalf("failed to set default: %v", err)
@@ -163,24 +160,6 @@ func NewApp() *appConfig {
 	return &appConfig{
 		sync: syncConfigs,
 	}
-}
-
-// Helper function to read the config file
-func readConfigFile(
-	configFile string,
-	logger *logging.Logger,
-) (listStreamConfig []*syncConfig, err error) {
-	logger.Debugf("Reading config file from %s", configFile)
-
-	var data []byte
-	data, err = ioutil.ReadFile(configFile)
-	if err != nil {
-		return
-	}
-	if err = json.Unmarshal(data, &listStreamConfig); err != nil {
-		return listStreamConfig, fmt.Errorf("failed to unmarshal config: %v", err)
-	}
-	return
 }
 
 func main() {

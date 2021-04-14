@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
@@ -10,7 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 )
 
-func backoff(exp int, caller string) {
+func backoff(exp int) {
 	time.Sleep(time.Duration(1<<exp) * time.Second)
 }
 
@@ -36,4 +38,14 @@ func getSession(region, endpoint string, httpClient *http.Client) *session.Sessi
 	}
 
 	return session.Must(session.NewSession(config))
+}
+
+// parseConfigFile reads and parses the config file
+func parseConfigFile(configFile string) (configs []*syncConfig, err error) {
+	var data []byte
+	data, err = ioutil.ReadFile(configFile)
+	if err == nil {
+		err = json.Unmarshal(data, &configs)
+	}
+	return
 }
