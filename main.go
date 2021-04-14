@@ -183,17 +183,6 @@ func readConfigFile(
 	return
 }
 
-// If the state has no timestamp, or if the timestamp
-// is more than 24 hours old, returns True. Else, False
-func (ss *syncState) isFreshStart(key primaryKey) bool {
-	logger.WithFields(logging.Fields{
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
-		"State Timestamp":   ss.timestamp,
-	}).Info("Checking if fresh start")
-	return ss.timestamp.IsZero() || time.Now().Sub(ss.timestamp) > streamRetentionHours
-}
-
 func main() {
 	app := NewApp()
 	quit := make(chan bool)
