@@ -43,7 +43,7 @@ func (ss *syncState) writeBatch(
 				"Destination Table":      key.dstTable,
 			}).Debug("Some items failed to be processed")
 			// exponential backoff before retrying
-			backoff(i, "BatchWrite")
+			backoff(i)
 			i++
 			// Retry writing items that were not processed
 			batch = output.UnprocessedItems
@@ -148,7 +148,7 @@ func (ss *syncState) readTable(
 					"Error":        err,
 					"Source Table": key.sourceTable,
 				}).Debug("Scan returned error")
-				backoff(i, "Scan")
+				backoff(i)
 			} else {
 				successfulScan = true
 				lastEvaluatedKey = result.LastEvaluatedKey

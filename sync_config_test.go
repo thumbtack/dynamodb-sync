@@ -70,7 +70,7 @@ func TestSetDefault(t *testing.T) {
 		mockConfig.EnableStreaming = test.stream
 
 		err := mockConfig.setDefault()
-		assert.Nilf(t, err, "%s failed", test.name)
+		assert.NoErrorf(t, err, "%s failed", test.name)
 		assert.Equalf(
 			t, test.expectReadQPS, mockConfig.ReadQPS,
 			"%s ReadQPS failed", test.name)

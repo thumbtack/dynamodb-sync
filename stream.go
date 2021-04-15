@@ -75,7 +75,7 @@ func (ss *syncState) shardSyncStart(key primaryKey,
 				}).Error("GetShardIterator Error")
 				return
 			}
-			backoff(i, "GetShardIterator")
+			backoff(i)
 		} else {
 			break
 		}
@@ -108,7 +108,7 @@ func (ss *syncState) shardSyncStart(key primaryKey,
 					ss.activeShardLock.Unlock()
 					return
 				}
-				backoff(i, "GetRecords")
+				backoff(i)
 			} else {
 				break
 			}
@@ -215,7 +215,7 @@ func (ss *syncState) insertRecord(item map[string]*dynamodb.AttributeValue, key 
 		if err == nil {
 			return nil
 		} else {
-			backoff(i, "PutItem")
+			backoff(i)
 		}
 	}
 	return err
@@ -234,7 +234,7 @@ func (ss *syncState) removeRecord(item map[string]*dynamodb.AttributeValue, key 
 		if err == nil {
 			return nil
 		} else {
-			backoff(i, "DeleteItem")
+			backoff(i)
 		}
 	}
 	return err

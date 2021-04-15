@@ -35,7 +35,7 @@ func TestBackoff(t *testing.T) {
 
 	for _, test := range tests {
 		start := time.Now()
-		backoff(test.exp, "unit-test")
+		backoff(test.exp)
 		duration := time.Since(start).Seconds()
 
 		cond := duration >= test.expect && duration <= test.expect*1.05
@@ -93,5 +93,49 @@ func TestGetSession(t *testing.T) {
 		assert.Equalf(t, test.region, *sess.Config.Region, "%s differ in region", test.name)
 		assert.Equalf(t, test.endpoint, *sess.Config.Endpoint, "%s differ in endpoint", test.name)
 		assert.NotNil(t, sess.Config.HTTPClient, "%s httpClient is nil", test.name)
+	}
+}
+
+func TestParseConfigFile(t *testing.T) {
+	configs, err := parseConfigFile("local/config.json")
+	assert.NoErrorf(t, err, "failed to parse the local config file")
+
+	expected := []*syncConfig{
+		{
+			SrcTable:                  "src1",
+			DstTable:                  "dst1",
+			SrcRegion:                 "us-west-2",
+			DstRegion:                 "us-west-2",
+			SrcEndpoint:               "http://localhost:8000",
+			DstEndpoint:               "http://localhost:8000",
+			SrcEnv:                    "production",
+			DstEnv:                    "staging",
+			ReadWorkers:               4,
+			WriteWorkers:              4,
+			ReadQPS:                   100,
+			WriteQPS:                  100,
+			UpdateCheckpointThreshold: 10,
+			EnableStreaming:           nil,
+		},
+		{
+			SrcTable:                  "src2",
+			DstTable:                  "dst2",
+			SrcRegion:                 "us-west-2",
+			DstRegion:                 "us-west-2",
+			SrcEndpoint:               "http://localhost:8000",
+			DstEndpoint:               "http://localhost:8000",
+			SrcEnv:                    "production",
+			DstEnv:                    "development",
+			ReadWorkers:               0,
+			WriteWorkers:              0,
+			ReadQPS:                   0,
+			WriteQPS:                  0,
+			UpdateCheckpointThreshold: 10,
+			EnableStreaming:           nil,
+		},
+	}
+
+	for i, config := range configs {
+		assert.Equalf(t, *expected[i], *config, "config %d failed", i)
 	}
 }
