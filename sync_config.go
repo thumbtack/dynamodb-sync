@@ -25,12 +25,12 @@ type syncConfig struct {
 
 func MockSyncConfig() *syncConfig {
 	return &syncConfig{
-		SrcTable: "src-table",
-		DstTable: "dst-table",
+		SrcTable:  "src-table",
+		DstTable:  "dst-table",
 		SrcRegion: "us-west-2",
 		DstRegion: "us-west-2",
-		SrcEnv: "production",
-		DstEnv: "staging",
+		SrcEnv:    "production",
+		DstEnv:    "staging",
 	}
 }
 
