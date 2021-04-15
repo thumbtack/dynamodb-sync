@@ -93,28 +93,28 @@ func TestSetDefault(t *testing.T) {
 }
 
 func TestGetCheckpointPK(t *testing.T) {
-	tests := []struct{
-		name string
-		srcEnv string
-		dstEnv string
+	tests := []struct {
+		name             string
+		srcEnv           string
+		dstEnv           string
 		expectCheckpoint primaryKey
-	} {
+	}{
 		{
-			name: "bare minimum setup",
+			name:   "bare minimum setup",
 			srcEnv: "production",
 			dstEnv: "staging",
 			expectCheckpoint: primaryKey{
 				sourceTable: "src-table",
-				dstTable: "dst-table",
+				dstTable:    "dst-table",
 			},
 		},
 		{
-			name: "env contains `new`",
+			name:   "env contains `new`",
 			srcEnv: "production_new",
 			dstEnv: "staging_new",
 			expectCheckpoint: primaryKey{
 				sourceTable: "src-table.account.production",
-				dstTable: "dst-table.account.staging",
+				dstTable:    "dst-table.account.staging",
 			},
 		},
 	}
