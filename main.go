@@ -147,8 +147,8 @@ func NewApp() (*appConfig, error) {
 		}
 	}
 
-	configFile := os.Getenv(paramConfigDir) + "/config.json"
-	syncConfigs, err := parseConfigFile(configFile)
+	filepath := os.Getenv(paramConfigDir) + "/config.json"
+	syncConfigs, err := parseConfigFile(filepath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file: %v", err)
 	}

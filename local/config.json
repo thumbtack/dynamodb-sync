@@ -25,10 +25,6 @@
     "src_env": "production",
     "dst_env": "development",
     "max_connect_retries": 3,
-    "read_workers": 4,
-    "write_workers": 4,
-    "read_qps": 200,
-    "write_qps": 100,
     "update_checkpoint_threshold": 10
   }
 ]

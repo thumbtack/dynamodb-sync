@@ -211,7 +211,7 @@ func (ss *syncState) streamSync(key primaryKey, streamArn string) (err error) {
 			if i == maxRetries {
 				return err
 			}
-			backoff(i, "Describe Stream")
+			backoff(i)
 		}
 
 		numShards += len(result.StreamDescription.Shards)
