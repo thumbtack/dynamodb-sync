@@ -22,10 +22,10 @@ const (
 
 // If the state has no timestamp, or if the timestamp
 // is more than 24 hours old, returns True. Else, False
-func (ss *syncState) isFreshStart(key primaryKey) bool {
+func (ss *syncState) isFreshStart() bool {
 	logger.WithFields(logging.Fields{
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
+		"Source Table":      ss.checkpointPK.sourceTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 		"State Timestamp":   ss.timestamp,
 	}).Info("Checking if fresh start")
 	return ss.timestamp.IsZero() || time.Now().Sub(ss.timestamp) > streamRetentionHours
@@ -33,7 +33,7 @@ func (ss *syncState) isFreshStart(key primaryKey) bool {
 
 func (ss *syncState) replicate(quit <-chan bool) {
 	// Check if we need to copy the table over from src to dst before processing the streams
-	if ss.isFreshStart(ss.checkpointPK) {
+	if ss.isFreshStart() {
 		ss.checkpoint = map[string]string{}
 		ss.expiredShards = map[string]bool{}
 		ss.timestamp = time.Time{}

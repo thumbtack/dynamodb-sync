@@ -7,11 +7,11 @@ import (
 )
 
 // Check if a shard is already processed
-func (ss *syncState) isShardProcessed(key primaryKey, shardId *string) bool {
+func (ss *syncState) isShardProcessed(shardId *string) bool {
 	ss.activeShardLock.RLock()
 	logFields := logging.Fields{
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
+		"Source Table":      ss.checkpointPK.sourceTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 		"Shard Id":          *shardId,
 	}
 	logger.WithFields(logFields).Debug("Checking if shard processing is completed")

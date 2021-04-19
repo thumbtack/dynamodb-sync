@@ -42,7 +42,7 @@ func (ss *syncState) shardSyncStart(streamArn string, shard *dynamodbstreams.Sha
 	shardId := shard.ShardId
 	// process parent shard before child
 	if parentShardId != nil {
-		for !ss.isShardProcessed(ss.checkpointPK, parentShardId) {
+		for !ss.isShardProcessed(parentShardId) {
 			logger.WithFields(logging.Fields{
 				"Shard Id":          *shardId,
 				"Parent Shard Id":   *parentShardId,
@@ -119,7 +119,7 @@ func (ss *syncState) shardSyncStart(streamArn string, shard *dynamodbstreams.Sha
 				"Source Table":      ss.checkpointPK.sourceTable,
 				"Destination Table": ss.checkpointPK.dstTable,
 			}).Debug("Shard sync, writing records")
-			ss.writeRecords(records.Records, ss.checkpointPK, shard)
+			ss.writeRecords(records.Records, shard)
 		}
 		shardIterator = records.NextShardIterator
 	}
@@ -139,7 +139,6 @@ func (ss *syncState) shardSyncStart(streamArn string, shard *dynamodbstreams.Sha
 // update the checkpoint
 func (ss *syncState) writeRecords(
 	records []*dynamodbstreams.Record,
-	key primaryKey,
 	shard *dynamodbstreams.Shard,
 ) {
 	var err error
@@ -157,8 +156,8 @@ func (ss *syncState) writeRecords(
 			logger.WithFields(logging.Fields{
 				"Event":             *r.EventName,
 				"Record":            *r.Dynamodb,
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 				"Shard Id":          *shard.ShardId,
 			}).Error("Unknown event on record")
 		}
@@ -167,8 +166,8 @@ func (ss *syncState) writeRecords(
 			logger.WithFields(logging.Fields{
 				"Record":            *r.Dynamodb,
 				"Event":             *r.EventName,
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 				"Shard Id":          *shard.ShardId,
 				"Error":             err,
 			}).Error("Failed to handle event")
@@ -176,16 +175,16 @@ func (ss *syncState) writeRecords(
 			logger.WithFields(logging.Fields{
 				"Record":            *r.Dynamodb,
 				"Event":             *r.EventName,
-				"Source Table":      key.sourceTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
 				"Shard Id":          *shard.ShardId,
-				"Destination Table": key.dstTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 			}).Debug("Handled event successfully")
 			ss.checkpointLock.Lock()
 			ss.recordCounter++
 			logger.WithFields(logging.Fields{
 				"Counter":           ss.recordCounter,
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 				"Shard Id":          *shard.ShardId,
 			}).Debug("Record counter")
 			if ss.recordCounter == ss.tableConfig.UpdateCheckpointThreshold {
