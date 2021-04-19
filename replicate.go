@@ -22,28 +22,28 @@ const (
 
 // If the state has no timestamp, or if the timestamp
 // is more than 24 hours old, returns True. Else, False
-func (ss *syncState) isFreshStart(key primaryKey) bool {
+func (ss *syncState) isFreshStart() bool {
 	logger.WithFields(logging.Fields{
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
+		"Source Table":      ss.checkpointPK.sourceTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 		"State Timestamp":   ss.timestamp,
 	}).Info("Checking if fresh start")
 	return ss.timestamp.IsZero() || time.Now().Sub(ss.timestamp) > streamRetentionHours
 }
 
-func (ss *syncState) replicate(quit <-chan bool, key primaryKey) {
+func (ss *syncState) replicate(quit <-chan bool) {
 	// Check if we need to copy the table over from src to dst before processing the streams
-	if ss.isFreshStart(key) {
+	if ss.isFreshStart() {
 		ss.checkpoint = map[string]string{}
 		ss.expiredShards = map[string]bool{}
 		ss.timestamp = time.Time{}
 
 		// Copy table start
-		if err := ss.copyTable(key); err != nil {
+		if err := ss.copyTable(); err != nil {
 			return
 		}
 		// Update checkpoint
-		ss.updateCheckpointTimestamp(key)
+		ss.updateCheckpointTimestamp()
 	}
 
 	// Check if streaming is needed
@@ -55,18 +55,18 @@ func (ss *syncState) replicate(quit <-chan bool, key primaryKey) {
 		select {
 		case <-quit:
 			logger.WithFields(logging.Fields{
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 			}).Info("Quitting stream syncing")
 			return
 		default:
 			// Start processing stream
-			err := ss.streamSyncStart(key)
+			err := ss.streamSyncStart()
 			if err != nil {
 				logger.WithFields(logging.Fields{
 					"Error":             err,
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
+					"Source Table":      ss.checkpointPK.sourceTable,
+					"Destination Table": ss.checkpointPK.dstTable,
 				}).Error("Error in replicating streams.")
 				// Stream may not have been enabled. Wait before trying again
 				time.Sleep(streamEnableWaitInterval)
@@ -82,10 +82,10 @@ func (ss *syncState) replicate(quit <-chan bool, key primaryKey) {
 // Once all the workers in the readWorker group are done,
 // we close the channel, and wait for the writeWorker group
 // to finish
-func (ss *syncState) copyTable(key primaryKey) error {
+func (ss *syncState) copyTable() error {
 	logger.WithFields(logging.Fields{
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
+		"Source Table":      ss.checkpointPK.sourceTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 	}).Info("Copying dynamodb tables")
 
 	// Fix up the r/w capacity of src and dst tables
@@ -102,7 +102,7 @@ func (ss *syncState) copyTable(key primaryKey) error {
 			sourceCapacity.writeCapacity,
 		}
 		if err := ss.updateCapacity(ss.tableConfig.SrcTable, newCapacity, srcDynamo); err != nil {
-			logger.WithFields(logging.Fields{"Table": key.sourceTable}).
+			logger.WithFields(logging.Fields{"Table": ss.checkpointPK.sourceTable}).
 				Error("Unable to update capacity, won't proceed with copy")
 			return err
 		}
@@ -115,7 +115,7 @@ func (ss *syncState) copyTable(key primaryKey) error {
 			ss.tableConfig.WriteQPS,
 		}
 		if err := ss.updateCapacity(ss.tableConfig.DstTable, newCapacity, dstDynamo); err != nil {
-			logger.WithFields(logging.Fields{"Table": key.dstTable}).
+			logger.WithFields(logging.Fields{"Table": ss.checkpointPK.dstTable}).
 				Error("Unable to update capacity, won't proceed with copy")
 			return err
 		}
@@ -133,19 +133,19 @@ func (ss *syncState) copyTable(key primaryKey) error {
 	for i := 0; i < writeWorkers; i++ {
 		logger.WithFields(logging.Fields{
 			"Write Worker":      i,
-			"Source Table":      key.sourceTable,
-			"Destination Table": key.dstTable,
+			"Source Table":      ss.checkpointPK.sourceTable,
+			"Destination Table": ss.checkpointPK.dstTable,
 		}).Debug("Starting copy table write worker..")
-		go ss.writeTable(key, items, &writerWG, i, rl)
+		go ss.writeTable(items, &writerWG, i, rl)
 	}
 	readerWG.Add(readWorkers)
 	for i := 0; i < readWorkers; i++ {
 		logger.WithFields(logging.Fields{
 			"Read Worker":       i,
-			"Source Table":      key.sourceTable,
-			"Destination Table": key.dstTable,
+			"Source Table":      ss.checkpointPK.sourceTable,
+			"Destination Table": ss.checkpointPK.dstTable,
 		}).Debug("Starting copy table read worker..")
-		go ss.readTable(key, items, &readerWG, i)
+		go ss.readTable(items, &readerWG, i)
 	}
 
 	readerWG.Wait()
@@ -153,21 +153,21 @@ func (ss *syncState) copyTable(key primaryKey) error {
 	writerWG.Wait()
 
 	logger.WithFields(logging.Fields{
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
+		"Source Table":      ss.checkpointPK.sourceTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 	}).Info("Finished copying dynamodb tables")
 
 	// Reset table capacity to original values
 	if isSourceThroughputChanged {
 		err := ss.updateCapacity(ss.tableConfig.SrcTable, sourceCapacity, srcDynamo)
 		if err != nil {
-			logger.Errorf("Failed to reset capacity for table: %s", key.sourceTable)
+			logger.Errorf("Failed to reset capacity for table: %s", ss.checkpointPK.sourceTable)
 		}
 	}
 	if isDstThroughputChanged {
 		err := ss.updateCapacity(ss.tableConfig.DstTable, dstCapacity, dstDynamo)
 		if err != nil {
-			logger.Errorf("Failed to reset capacity for table: %s", key.dstTable)
+			logger.Errorf("Failed to reset capacity for table: %s", ss.checkpointPK.dstTable)
 		}
 	}
 	return nil
@@ -175,20 +175,20 @@ func (ss *syncState) copyTable(key primaryKey) error {
 
 // Check if the stream needs to be synced from the beginning, or
 // from a particular checkpoint
-func (ss *syncState) streamSyncStart(key primaryKey) error {
+func (ss *syncState) streamSyncStart() error {
 	logger.WithFields(logging.Fields{
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
+		"Source Table":      ss.checkpointPK.sourceTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 	}).Info("Starting DynamoDB Stream Sync")
-	streamArn, err := ss.getStreamArn(key)
+	streamArn, err := ss.getStreamArn()
 	if err != nil {
 		return err
 	}
-	return ss.streamSync(key, streamArn)
+	return ss.streamSync(streamArn)
 }
 
 // Read from src stream, and write to dst table
-func (ss *syncState) streamSync(key primaryKey, streamArn string) (err error) {
+func (ss *syncState) streamSync(streamArn string) (err error) {
 	var result *dynamodbstreams.DescribeStreamOutput
 	lastEvaluatedShardId := ""
 	numShards := 0
@@ -223,8 +223,8 @@ func (ss *syncState) streamSync(key primaryKey, streamArn string) (err error) {
 			if ok {
 				// 	Case 1: Shard has been processed in an earlier run
 				logger.WithFields(logging.Fields{
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
+					"Source Table":      ss.checkpointPK.sourceTable,
+					"Destination Table": ss.checkpointPK.dstTable,
 					"Shard Id":          *shard.ShardId,
 				}).Debug("Shard processed in an earlier run")
 				continue
@@ -237,8 +237,8 @@ func (ss *syncState) streamSync(key primaryKey, streamArn string) (err error) {
 			if !ok {
 				// Case 2: New shard - start processing
 				logger.WithFields(logging.Fields{
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
+					"Source Table":      ss.checkpointPK.sourceTable,
+					"Destination Table": ss.checkpointPK.dstTable,
 					"Shard Id":          *shard.ShardId,
 				}).Debug("Starting processor for shard")
 
@@ -246,12 +246,12 @@ func (ss *syncState) streamSync(key primaryKey, streamArn string) (err error) {
 				ss.activeShardProcessors[*shard.ShardId] = true
 				ss.activeShardLock.Unlock()
 
-				go ss.shardSyncStart(key, streamArn, shard)
+				go ss.shardSyncStart(streamArn, shard)
 			} else {
 				// Case 3: Shard is currently being processed
 				logger.WithFields(logging.Fields{
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
+					"Source Table":      ss.checkpointPK.sourceTable,
+					"Destination Table": ss.checkpointPK.dstTable,
 					"Shard Id":          *shard.ShardId,
 				}).Debug("Shard is already being processed")
 			}
@@ -267,8 +267,8 @@ func (ss *syncState) streamSync(key primaryKey, streamArn string) (err error) {
 
 			numShards = 0
 			logger.WithFields(logging.Fields{
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 				"SleepTime":         shardEnumerateInterval,
 			}).Debug("Sleeping before refreshing list of shards")
 

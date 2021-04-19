@@ -12,30 +12,28 @@ import (
 )
 
 // Helper function to get the streamArn
-func (ss *syncState) getStreamArn(key primaryKey) (string, error) {
+func (ss *syncState) getStreamArn() (string, error) {
 	describeTableInput := &dynamodb.DescribeTableInput{
 		TableName: aws.String(ss.tableConfig.SrcTable),
 	}
 	// Remove after debugging
-	logger.WithFields(logging.Fields{"TableName": key.sourceTable}).Debug()
+	logger.WithFields(logging.Fields{"TableName": ss.checkpointPK.sourceTable}).Debug()
 	describeTableResult, err := ss.srcDynamo.DescribeTable(describeTableInput)
 	if err != nil || describeTableResult.Table.StreamSpecification == nil {
 		return "", errors.New(fmt.Sprintf(
 			"Failed to get StreamARN for table %s. Check if stream is enabled",
-			key.sourceTable),
+			ss.checkpointPK.sourceTable),
 		)
 	}
 	streamArn := describeTableResult.Table.LatestStreamArn
 	logger.WithFields(logging.Fields{
 		"StreamARN":    *streamArn,
-		"Source Table": key.sourceTable,
+		"Source Table": ss.checkpointPK.sourceTable,
 	}).Info("Latest StreamARN")
 	return *streamArn, nil
 }
 
-func (ss *syncState) shardSyncStart(key primaryKey,
-	streamArn string,
-	shard *dynamodbstreams.Shard) {
+func (ss *syncState) shardSyncStart(streamArn string, shard *dynamodbstreams.Shard) {
 	var iterator *dynamodbstreams.GetShardIteratorOutput
 	var records *dynamodbstreams.GetRecordsOutput
 	var err error
@@ -44,24 +42,24 @@ func (ss *syncState) shardSyncStart(key primaryKey,
 	shardId := shard.ShardId
 	// process parent shard before child
 	if parentShardId != nil {
-		for !ss.isShardProcessed(key, parentShardId) {
+		for !ss.isShardProcessed(parentShardId) {
 			logger.WithFields(logging.Fields{
 				"Shard Id":          *shardId,
 				"Parent Shard Id":   *parentShardId,
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 			}).Debug("Waiting for parent shard to complete")
 			time.Sleep(shardWaitForParentInterval)
 		}
 		logger.WithFields(logging.Fields{
 			"Shard Id":          *shardId,
 			"Parent Shard Id":   *parentShardId,
-			"Source Table":      key.sourceTable,
-			"Destination Table": key.dstTable,
+			"Source Table":      ss.checkpointPK.sourceTable,
+			"Destination Table": ss.checkpointPK.dstTable,
 		}).Debug("Completed processing parent shard")
 	}
 
-	shardIteratorInput := ss.getShardIteratorInput(key, *shardId, streamArn)
+	shardIteratorInput := ss.getShardIteratorInput(*shardId, streamArn)
 
 	for i := 1; i <= maxRetries; i++ {
 		iterator, err = ss.stream.GetShardIterator(shardIteratorInput)
@@ -70,8 +68,8 @@ func (ss *syncState) shardSyncStart(key primaryKey,
 				logger.WithFields(logging.Fields{
 					"Shard Id":          *shardId,
 					"Error":             err,
-					"Source Table":      key.sourceTable,
-					"Destination Table": key.dstTable,
+					"Source Table":      ss.checkpointPK.sourceTable,
+					"Destination Table": ss.checkpointPK.dstTable,
 				}).Error("GetShardIterator Error")
 				return
 			}
@@ -97,8 +95,8 @@ func (ss *syncState) shardSyncStart(key primaryKey,
 					logger.WithFields(logging.Fields{
 						"Shard Id":          *shardId,
 						"Error":             err,
-						"Source Table":      key.sourceTable,
-						"Destination Table": key.dstTable,
+						"Source Table":      ss.checkpointPK.sourceTable,
+						"Destination Table": ss.checkpointPK.dstTable,
 						"Iterator":          *shardIterator,
 					}).Error("GetRecords Error")
 					// Let this thread return,
@@ -118,20 +116,20 @@ func (ss *syncState) shardSyncStart(key primaryKey,
 			logger.WithFields(logging.Fields{
 				"Shard Id":          *shardId,
 				"Records len":       len(records.Records),
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 			}).Debug("Shard sync, writing records")
-			ss.writeRecords(records.Records, key, shard)
+			ss.writeRecords(records.Records, shard)
 		}
 		shardIterator = records.NextShardIterator
 	}
 	// Completed shard processing
 	logger.WithFields(logging.Fields{
 		"Shard Id":          *shardId,
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
+		"Source Table":      ss.checkpointPK.sourceTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 	}).Debug("Shard Iterator returns nil")
-	ss.markShardCompleted(key, shardId)
+	ss.markShardCompleted(shardId)
 }
 
 // Iterate through the records
@@ -141,7 +139,6 @@ func (ss *syncState) shardSyncStart(key primaryKey,
 // update the checkpoint
 func (ss *syncState) writeRecords(
 	records []*dynamodbstreams.Record,
-	key primaryKey,
 	shard *dynamodbstreams.Shard,
 ) {
 	var err error
@@ -152,15 +149,15 @@ func (ss *syncState) writeRecords(
 			// same as insert
 			fallthrough
 		case "INSERT":
-			err = ss.insertRecord(r.Dynamodb.NewImage, key)
+			err = ss.insertRecord(r.Dynamodb.NewImage)
 		case "REMOVE":
-			err = ss.removeRecord(r.Dynamodb.Keys, key)
+			err = ss.removeRecord(r.Dynamodb.Keys)
 		default:
 			logger.WithFields(logging.Fields{
 				"Event":             *r.EventName,
 				"Record":            *r.Dynamodb,
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 				"Shard Id":          *shard.ShardId,
 			}).Error("Unknown event on record")
 		}
@@ -169,8 +166,8 @@ func (ss *syncState) writeRecords(
 			logger.WithFields(logging.Fields{
 				"Record":            *r.Dynamodb,
 				"Event":             *r.EventName,
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 				"Shard Id":          *shard.ShardId,
 				"Error":             err,
 			}).Error("Failed to handle event")
@@ -178,22 +175,20 @@ func (ss *syncState) writeRecords(
 			logger.WithFields(logging.Fields{
 				"Record":            *r.Dynamodb,
 				"Event":             *r.EventName,
-				"Source Table":      key.sourceTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
 				"Shard Id":          *shard.ShardId,
-				"Destination Table": key.dstTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 			}).Debug("Handled event successfully")
 			ss.checkpointLock.Lock()
 			ss.recordCounter++
 			logger.WithFields(logging.Fields{
 				"Counter":           ss.recordCounter,
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 				"Shard Id":          *shard.ShardId,
 			}).Debug("Record counter")
 			if ss.recordCounter == ss.tableConfig.UpdateCheckpointThreshold {
-				ss.updateCheckpoint(key,
-					*r.Dynamodb.SequenceNumber,
-					shard)
+				ss.updateCheckpoint(*r.Dynamodb.SequenceNumber, shard)
 				// reset the recordCounter
 				ss.recordCounter = 0
 			}
@@ -203,7 +198,7 @@ func (ss *syncState) writeRecords(
 }
 
 // Insert this record in the dst table
-func (ss *syncState) insertRecord(item map[string]*dynamodb.AttributeValue, key primaryKey) error {
+func (ss *syncState) insertRecord(item map[string]*dynamodb.AttributeValue) error {
 	var err error
 
 	input := &dynamodb.PutItemInput{
@@ -222,7 +217,7 @@ func (ss *syncState) insertRecord(item map[string]*dynamodb.AttributeValue, key 
 }
 
 // Remove this record from the dst table
-func (ss *syncState) removeRecord(item map[string]*dynamodb.AttributeValue, key primaryKey) error {
+func (ss *syncState) removeRecord(item map[string]*dynamodb.AttributeValue) error {
 	var err error
 
 	input := &dynamodb.DeleteItemInput{

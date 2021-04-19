@@ -17,7 +17,6 @@ import (
 // Batch Writes item to dst table
 func (ss *syncState) writeBatch(
 	batch map[string][]*dynamodb.WriteRequest,
-	key primaryKey,
 	rl *rate.Limiter,
 	reqCapacity float64,
 	writeBatchSize int64,
@@ -39,8 +38,8 @@ func (ss *syncState) writeBatch(
 		if output.UnprocessedItems != nil {
 			logger.WithFields(logging.Fields{
 				"Unprocessed Items Size": len(output.UnprocessedItems),
-				"Source Table":           key.sourceTable,
-				"Destination Table":      key.dstTable,
+				"Source Table":           ss.checkpointPK.sourceTable,
+				"Destination Table":      ss.checkpointPK.dstTable,
 			}).Debug("Some items failed to be processed")
 			// exponential backoff before retrying
 			backoff(i)
@@ -58,7 +57,6 @@ func (ss *syncState) writeBatch(
 // If there are any more items left in the end,
 // process those too
 func (ss *syncState) writeTable(
-	key primaryKey,
 	itemsChan chan []map[string]*dynamodb.AttributeValue,
 	writerWG *sync.WaitGroup,
 	id int,
@@ -79,8 +77,8 @@ func (ss *syncState) writeTable(
 		if !more {
 			logger.WithFields(logging.Fields{
 				"Write Worker":      id,
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
+				"Source Table":      ss.checkpointPK.sourceTable,
+				"Destination Table": ss.checkpointPK.dstTable,
 			}).Debug("Write worker has finished")
 			return
 		}
@@ -88,7 +86,7 @@ func (ss *syncState) writeTable(
 		for _, item := range items {
 			requestSize := len(writeRequest[dst])
 			if int64(requestSize) == writeBatchSize {
-				consumedCapacity := ss.writeBatch(writeRequest, key, rl, reqCapacity, writeBatchSize)
+				consumedCapacity := ss.writeBatch(writeRequest, rl, reqCapacity, writeBatchSize)
 				reqCapacity = 0
 				for _, each := range consumedCapacity {
 					reqCapacity += *each.CapacityUnits
@@ -107,7 +105,7 @@ func (ss *syncState) writeTable(
 		// Maybe more items are left because len(items) % maxBatchSize != 0
 		requestSize := len(writeRequest[dst])
 		if requestSize > 0 {
-			ss.writeBatch(writeRequest, key, rl, reqCapacity, writeBatchSize)
+			ss.writeBatch(writeRequest, rl, reqCapacity, writeBatchSize)
 			writeRequest = make(map[string][]*dynamodb.WriteRequest, 0)
 		}
 	}
@@ -119,7 +117,6 @@ func (ss *syncState) writeTable(
 // So, we scan the table in a loop until the len(lastEvaluatedKey)
 // is zero
 func (ss *syncState) readTable(
-	key primaryKey,
 	items chan []map[string]*dynamodb.AttributeValue,
 	readerWG *sync.WaitGroup,
 	id int,
@@ -146,7 +143,7 @@ func (ss *syncState) readTable(
 			if err != nil {
 				logger.WithFields(logging.Fields{
 					"Error":        err,
-					"Source Table": key.sourceTable,
+					"Source Table": ss.checkpointPK.sourceTable,
 				}).Debug("Scan returned error")
 				backoff(i)
 			} else {
@@ -157,7 +154,7 @@ func (ss *syncState) readTable(
 					"Scanned items size": len(result.Items),
 					"Scanned Count":      *result.ScannedCount,
 					"LastEvaluatedKey":   lastEvaluatedKey,
-					"Source Table":       key.sourceTable,
+					"Source Table":       ss.checkpointPK.sourceTable,
 				}).Debug("Scan successful")
 				break
 			}
@@ -166,13 +163,13 @@ func (ss *syncState) readTable(
 		if successfulScan {
 			if len(lastEvaluatedKey) == 0 {
 				logger.WithFields(logging.Fields{
-					"Source Table": key.sourceTable,
+					"Source Table": ss.checkpointPK.sourceTable,
 				}).Debug("Scan completed")
 				return
 			}
 		} else {
 			logger.WithFields(logging.Fields{
-				"Source Table":       key.sourceTable,
+				"Source Table":       ss.checkpointPK.sourceTable,
 				"Number of Attempts": maxRetries,
 			}).Error("Scan failed")
 			os.Exit(1)
@@ -301,9 +298,9 @@ func (ss *syncState) getTableSize(table string, dynamo *dynamodb.DynamoDB) int64
 	return size
 }
 
-func (ss *syncState) createTable(key primaryKey, properties *dynamodb.DescribeTableOutput) error {
+func (ss *syncState) createTable(properties *dynamodb.DescribeTableOutput) error {
 	logger.WithFields(logging.Fields{
-		"Destination Table": key.dstTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 	}).Info("Creating table")
 
 	input := &dynamodb.CreateTableInput{
@@ -325,7 +322,7 @@ func (ss *syncState) createTable(key primaryKey, properties *dynamodb.DescribeTa
 		})
 		status = *output.Table.TableStatus
 		logger.WithFields(logging.Fields{
-			"Destination Table": key.dstTable,
+			"Destination Table": ss.checkpointPK.dstTable,
 		}).Debug("Waiting for destination table to be created")
 		time.Sleep(1 * time.Second)
 	}
@@ -333,9 +330,9 @@ func (ss *syncState) createTable(key primaryKey, properties *dynamodb.DescribeTa
 	return err
 }
 
-func (ss *syncState) deleteTable(key primaryKey) (err error) {
+func (ss *syncState) deleteTable() (err error) {
 	logger.WithFields(logging.Fields{
-		"Destination Table": key.dstTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 	}).Info("Dropping items from stale table")
 
 	if strings.Contains(strings.ToLower(ss.tableConfig.DstTable), "prod") ||
@@ -364,12 +361,12 @@ func (ss *syncState) deleteTable(key primaryKey) (err error) {
 
 	if err != nil {
 		logger.WithFields(logging.Fields{
-			"Destination Table": key.dstTable,
+			"Destination Table": ss.checkpointPK.dstTable,
 			"Error":             err,
 		}).Info("Failed to delete table")
 	} else {
 		logger.WithFields(logging.Fields{
-			"Destination Table": key.dstTable,
+			"Destination Table": ss.checkpointPK.dstTable,
 		}).Info("Deleted dynamodb table")
 	}
 
