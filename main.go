@@ -58,19 +58,20 @@ var (
 	ddbClient   = dynamodb.New(getSession(ddbRegion, ddbEndpoint, nil))
 )
 
-// Config file is read and dumped into this struct
+// syncState presents each state during the sync
 type syncState struct {
 	tableConfig           syncConfig
 	srcDynamo             *dynamodb.DynamoDB
 	dstDynamo             *dynamodb.DynamoDB
 	stream                *dynamodbstreams.DynamoDBStreams
 	completedShardLock    sync.RWMutex
-	activeShardProcessors map[string]bool
 	activeShardLock       sync.RWMutex
 	checkpointLock        sync.RWMutex
-	recordCounter         int
-	checkpoint            map[string]string
+	activeShardProcessors map[string]bool
 	expiredShards         map[string]bool
+	checkpoint            map[string]string
+	checkpointPK          primaryKey
+	recordCounter         int
 	timestamp             time.Time
 }
 
@@ -178,6 +179,7 @@ func main() {
 		}).Info("Launching replicate")
 
 		syncWorker := NewSyncState(*config)
+		syncWorker.checkpointPK = key
 		if syncWorker == nil {
 			logger.WithFields(logging.Fields{
 				"Source Table":      key.sourceTable,
@@ -188,7 +190,7 @@ func main() {
 
 		syncWorker.readCheckpoint()
 		// Call a go routine to replicate for each key
-		go syncWorker.replicate(quit, key)
+		go syncWorker.replicate(quit)
 	}
 
 	http.HandleFunc("/", syncResponder())

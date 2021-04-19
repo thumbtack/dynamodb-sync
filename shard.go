@@ -26,17 +26,17 @@ func (ss *syncState) isShardProcessed(key primaryKey, shardId *string) bool {
 }
 
 // Mark a shardId as completed
-func (ss *syncState) markShardCompleted(key primaryKey, shardId *string) {
-	ss.expireCheckpointLocal(key, shardId)
-	ss.expireCheckpointRemote(key, *shardId)
+func (ss *syncState) markShardCompleted(shardId *string) {
+	ss.expireCheckpointLocal(shardId)
+	ss.expireCheckpointRemote(*shardId)
 }
 
 // TRIM_HORIZON indicates we want to read from the beginning of the shard
 // AFTER_SEQUENCE_NUMBER, and providing a sequence number (from the checkpoint
 // allows us to read the shard from that point
 func (ss *syncState) getShardIteratorInput(
-	key primaryKey, shardId string,
-	streamArn string) *dynamodbstreams.GetShardIteratorInput {
+	shardId string, streamArn string,
+) *dynamodbstreams.GetShardIteratorInput {
 	var shardIteratorInput *dynamodbstreams.GetShardIteratorInput
 	ss.checkpointLock.RLock()
 	_, ok := ss.checkpoint[shardId]
@@ -62,8 +62,8 @@ func (ss *syncState) getShardIteratorInput(
 		"Shard Id":          shardId,
 		"sharditeratorType": shardIteratorInput.ShardIteratorType,
 		"StreamARN":         streamArn,
-		"Source Table":      key.sourceTable,
-		"Destination Table": key.dstTable,
+		"Source Table":      ss.checkpointPK.sourceTable,
+		"Destination Table": ss.checkpointPK.dstTable,
 	}).Debug("ShardIterator")
 
 	return shardIteratorInput
