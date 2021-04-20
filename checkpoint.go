@@ -20,7 +20,7 @@ const (
 
 // Update checkpoint locally, and update checkpoint dynamodb table
 func (ss *syncState) updateCheckpoint(sequenceNumber string, shard *dynamodbstreams.Shard) {
-	timestamp := time.Now().Format(time.RFC3339)
+	timestamp := time.Now()
 	if shard != nil {
 		ss.updateCheckpointLocal(sequenceNumber, shard, timestamp)
 		ss.updateCheckpointRemote(shard.ShardId, timestamp)
@@ -28,7 +28,7 @@ func (ss *syncState) updateCheckpoint(sequenceNumber string, shard *dynamodbstre
 }
 
 func (ss *syncState) updateCheckpointTimestamp() {
-	timestamp := time.Now().Format(time.RFC3339)
+	timestamp := time.Now()
 	ss.updateTimestampLocal(timestamp)
 	ss.updateTimestampRemote(timestamp)
 }
@@ -123,23 +123,18 @@ func (ss *syncState) isCheckpointFound() bool {
 	return true
 }
 
-// Update the checkpoint for `key's` local state
-// sync  : timestamp,
-// 		  checkpoint[`shardId`]: `sequenceNumber`
+// updateCheckpointLocal updates the checkpoint for `key's` local state sync
 func (ss *syncState) updateCheckpointLocal(
 	sequenceNumber string,
 	shard *dynamodbstreams.Shard,
-	timestamp string,
+	timestamp time.Time,
 ) {
-	ss.timestamp, _ = time.Parse(time.RFC3339, timestamp)
+	ss.timestamp = timestamp
 	ss.checkpoint[*shard.ShardId] = sequenceNumber
 }
 
-// Update the checkpoint for `key` in the checkpoint dynamodb table
-func (ss *syncState) updateCheckpointRemote(
-	shardId *string,
-	timestamp string,
-) {
+// updateCheckpointRemote updates the checkpoint for `key` in the checkpoint dynamodb table
+func (ss *syncState) updateCheckpointRemote(shardId *string, timestamp time.Time) {
 	data, _ := json.Marshal(ss.checkpoint)
 	tableKey := map[string]*dynamodb.AttributeValue{
 		sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
@@ -155,7 +150,7 @@ func (ss *syncState) updateCheckpointRemote(
 		},
 		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
 			":val": {B: data},
-			":ts":  {S: aws.String(timestamp)},
+			":ts":  {S: aws.String(timestamp.Format(time.RFC3339))},
 		},
 		UpdateExpression: aws.String("SET #CP = :val, #TS = :ts"),
 	}
@@ -182,19 +177,11 @@ func (ss *syncState) updateCheckpointRemote(
 	}
 }
 
-func (ss *syncState) updateTimestampLocal(timestamp string) {
-	var err error
-	ss.timestamp, err = time.Parse(time.RFC3339, timestamp)
-	if err != nil {
-		logger.WithFields(logging.Fields{
-			"Error":             err,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Error("Failed to update local timestamp")
-	}
+func (ss *syncState) updateTimestampLocal(timestamp time.Time) {
+	ss.timestamp = timestamp
 }
 
-func (ss *syncState) updateTimestampRemote(timestamp string) {
+func (ss *syncState) updateTimestampRemote(timestamp time.Time) {
 	tableKey := map[string]*dynamodb.AttributeValue{
 		sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
 		dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
@@ -206,7 +193,7 @@ func (ss *syncState) updateTimestampRemote(timestamp string) {
 			"#TS": aws.String(timestp),
 		},
 		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":ts": {S: aws.String(timestamp)},
+			":ts": {S: aws.String(timestamp.Format(time.RFC3339))},
 		},
 		UpdateExpression: aws.String("SET #TS = :ts"),
 	}
@@ -291,8 +278,7 @@ func (ss *syncState) expireCheckpointLocal(shardId *string) {
 // Remove checkpoint for <primaryKey, shardId> from the checkpoint dynamodb table
 func (ss *syncState) expireCheckpointRemote(shardId string) {
 	data, _ := json.Marshal(ss.expiredShards)
-	timestamp := ss.timestamp.Format(time.RFC3339)
-	ss.updateCheckpointRemote(&shardId, timestamp)
+	ss.updateCheckpointRemote(&shardId, ss.timestamp)
 
 	ss.checkpointLock.Lock()
 	input := &dynamodb.UpdateItemInput{
