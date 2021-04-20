@@ -29,13 +29,8 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"strconv"
-	"sync"
-	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
-	"github.com/aws/aws-sdk-go/service/dynamodbstreams"
 	logging "github.com/sirupsen/logrus"
 )
 
@@ -58,67 +53,6 @@ var (
 	ddbClient   = dynamodb.New(getSession(ddbRegion, ddbEndpoint, nil))
 )
 
-// syncState presents each state during the sync
-type syncState struct {
-	tableConfig           syncConfig
-	srcDynamo             *dynamodb.DynamoDB
-	dstDynamo             *dynamodb.DynamoDB
-	stream                *dynamodbstreams.DynamoDBStreams
-	completedShardLock    sync.RWMutex
-	activeShardLock       sync.RWMutex
-	checkpointLock        sync.RWMutex
-	activeShardProcessors map[string]bool
-	expiredShards         map[string]bool
-	checkpoint            map[string]string
-	checkpointPK          primaryKey
-	recordCounter         int
-	timestamp             time.Time
-}
-
-// syncState Constructor
-func NewSyncState(tableConfig syncConfig) *syncState {
-	httpClient := &http.Client{
-		Timeout: 8 * time.Second,
-		Transport: &http.Transport{
-			MaxIdleConns:    2048,
-			MaxConnsPerHost: 1024,
-		},
-	}
-	srcSess := getSession(tableConfig.SrcRegion, tableConfig.SrcEndpoint, httpClient)
-	dstSess := getSession(tableConfig.DstRegion, tableConfig.DstEndpoint, nil)
-	srcRoleArn := getRoleArn(tableConfig.SrcEnv)
-	dstRoleArn := getRoleArn(tableConfig.DstEnv)
-	logger.WithFields(logging.Fields{
-		"Src Role Arn": srcRoleArn,
-		"Dst Role Arn": dstRoleArn,
-	}).Debug("Role ARN")
-
-	srcCreds := stscreds.NewCredentials(srcSess, srcRoleArn)
-	dstCreds := stscreds.NewCredentials(dstSess, dstRoleArn)
-	srcDynamo := dynamodb.New(srcSess, &aws.Config{Credentials: srcCreds})
-	dstDynamo := dynamodb.New(dstSess, &aws.Config{Credentials: dstCreds})
-	stream := dynamodbstreams.New(srcSess, &aws.Config{Credentials: srcCreds})
-
-	return &syncState{
-		tableConfig:           tableConfig,
-		srcDynamo:             srcDynamo,
-		dstDynamo:             dstDynamo,
-		stream:                stream,
-		completedShardLock:    sync.RWMutex{},
-		activeShardProcessors: map[string]bool{},
-		activeShardLock:       sync.RWMutex{},
-		checkpointLock:        sync.RWMutex{},
-		recordCounter:         0,
-		checkpoint:            map[string]string{},
-		expiredShards:         map[string]bool{},
-		timestamp:             time.Time{},
-	}
-}
-
-type appConfig struct {
-	sync []*syncConfig
-}
-
 // The primary key of the Checkpoint ddb table, of the stream etc
 // We need the key to be source + dest, since we can have a single
 // source being synced with multiple destinations
@@ -131,6 +65,10 @@ type primaryKey struct {
 type provisionedThroughput struct {
 	readCapacity  int64
 	writeCapacity int64
+}
+
+type appConfig struct {
+	sync []*syncConfig
 }
 
 // NewApp sets up the app configuration
@@ -174,20 +112,11 @@ func main() {
 	for _, config := range app.sync {
 		key := config.getCheckpointPK()
 		logger.WithFields(logging.Fields{
-			"Source Table":      key.sourceTable,
-			"Destination Table": key.dstTable,
-		}).Info("Launching replicate")
+			"src table": key.sourceTable,
+			"dst table": key.dstTable,
+		}).Info("Launching replication...")
 
-		syncWorker := NewSyncState(*config)
-		syncWorker.checkpointPK = key
-		if syncWorker == nil {
-			logger.WithFields(logging.Fields{
-				"Source Table":      key.sourceTable,
-				"Destination Table": key.dstTable,
-			}).Error("Error in connecting to tables. Check config file")
-			return
-		}
-
+		syncWorker := NewSyncState(config, key)
 		syncWorker.readCheckpoint()
 		// Call a go routine to replicate for each key
 		go syncWorker.replicate(quit)

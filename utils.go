@@ -24,6 +24,7 @@ func getRoleArn(env string) string {
 	if roleArn == "" {
 		logger.Fatalf("failed to get role arn. please check the config")
 	}
+	logger.Debugf("role arn: %s", roleArn)
 	return roleArn
 }
 
