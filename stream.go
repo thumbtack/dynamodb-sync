@@ -11,14 +11,11 @@ import (
 	logging "github.com/sirupsen/logrus"
 )
 
-// Helper function to get the streamArn
+// getStreamArn gets the streamArn
 func (ss *syncState) getStreamArn() (string, error) {
-	describeTableInput := &dynamodb.DescribeTableInput{
+	describeTableResult, err := ss.srcDynamo.DescribeTable(&dynamodb.DescribeTableInput{
 		TableName: aws.String(ss.tableConfig.SrcTable),
-	}
-	// Remove after debugging
-	logger.WithFields(logging.Fields{"TableName": ss.checkpointPK.sourceTable}).Debug()
-	describeTableResult, err := ss.srcDynamo.DescribeTable(describeTableInput)
+	})
 	if err != nil || describeTableResult.Table.StreamSpecification == nil {
 		return "", errors.New(fmt.Sprintf(
 			"Failed to get StreamARN for table %s. Check if stream is enabled",
@@ -34,102 +31,72 @@ func (ss *syncState) getStreamArn() (string, error) {
 }
 
 func (ss *syncState) shardSyncStart(streamArn string, shard *dynamodbstreams.Shard) {
-	var iterator *dynamodbstreams.GetShardIteratorOutput
-	var records *dynamodbstreams.GetRecordsOutput
-	var err error
-
-	parentShardId := shard.ParentShardId
-	shardId := shard.ShardId
+	logField := logging.Fields{
+		"shardID":        *shard.ShardId,
+		"parent shardID": *shard.ParentShardId,
+		"src table":      ss.checkpointPK.sourceTable,
+		"dst table":      ss.checkpointPK.dstTable,
+	}
 	// process parent shard before child
-	if parentShardId != nil {
-		for !ss.isShardProcessed(parentShardId) {
-			logger.WithFields(logging.Fields{
-				"Shard Id":          *shardId,
-				"Parent Shard Id":   *parentShardId,
-				"Source Table":      ss.checkpointPK.sourceTable,
-				"Destination Table": ss.checkpointPK.dstTable,
-			}).Debug("Waiting for parent shard to complete")
+	if shard.ParentShardId != nil {
+		for !ss.isShardProcessed(shard.ParentShardId) {
+			logger.WithFields(logField).Debug("Waiting for parent shard to complete")
 			time.Sleep(shardWaitForParentInterval)
 		}
-		logger.WithFields(logging.Fields{
-			"Shard Id":          *shardId,
-			"Parent Shard Id":   *parentShardId,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Debug("Completed processing parent shard")
+		logger.WithFields(logField).Debug("Completed processing parent shard")
 	}
 
-	shardIteratorInput := ss.getShardIteratorInput(*shardId, streamArn)
-
+	var shardIterator *string
+	shardIteratorInput := ss.getShardIteratorInput(*shard.ShardId, streamArn)
 	for i := 1; i <= maxRetries; i++ {
-		iterator, err = ss.stream.GetShardIterator(shardIteratorInput)
-		if err != nil {
+		shardIteratorOutput, err := ss.stream.GetShardIterator(shardIteratorInput)
+		if err == nil {
+			shardIterator = shardIteratorOutput.ShardIterator
+			break
+		}
+		if i == maxRetries {
+			logField["error"] = err
+			logger.WithFields(logField).Error("failed in GetShardIterator")
+			return
+		}
+		backoff(i)
+	}
+
+	// the shard is closed when nil, the requested iterator will not return any more data
+	for shardIterator != nil {
+		var records []*dynamodbstreams.Record
+		for i := 1; i <= maxRetries; i++ {
+			getRecordsOutput, err := ss.stream.GetRecords(&dynamodbstreams.GetRecordsInput{
+				ShardIterator: shardIterator,
+			})
+			if err == nil {
+				records = getRecordsOutput.Records
+				shardIterator = getRecordsOutput.NextShardIterator
+				break
+			}
 			if i == maxRetries {
-				logger.WithFields(logging.Fields{
-					"Shard Id":          *shardId,
-					"Error":             err,
-					"Source Table":      ss.checkpointPK.sourceTable,
-					"Destination Table": ss.checkpointPK.dstTable,
-				}).Error("GetShardIterator Error")
+				logField["iterator"] = *shardIterator
+				logField["error"] = err
+				logger.WithFields(logField).Error("GetRecords Error")
+
+				// let this thread return, and let a new one processes this shard
+				ss.activeShardLock.Lock()
+				delete(ss.activeShardProcessors, *shard.ShardId)
+				ss.activeShardLock.Unlock()
 				return
 			}
 			backoff(i)
-		} else {
-			break
-		}
-	}
-
-	shardIterator := iterator.ShardIterator
-
-	// when nil, the shard has been closed, and the requested iterator
-	// will not return any more data
-	for shardIterator != nil {
-		for i := 1; i <= maxRetries; i++ {
-
-			records, err = ss.stream.GetRecords(&dynamodbstreams.GetRecordsInput{
-				ShardIterator: shardIterator,
-			})
-
-			if err != nil {
-				if i == maxRetries {
-					logger.WithFields(logging.Fields{
-						"Shard Id":          *shardId,
-						"Error":             err,
-						"Source Table":      ss.checkpointPK.sourceTable,
-						"Destination Table": ss.checkpointPK.dstTable,
-						"Iterator":          *shardIterator,
-					}).Error("GetRecords Error")
-					// Let this thread return,
-					// but let a new thread process this shard
-					ss.activeShardLock.Lock()
-					delete(ss.activeShardProcessors, *shardId)
-					ss.activeShardLock.Unlock()
-					return
-				}
-				backoff(i)
-			} else {
-				break
-			}
 		}
 
-		if len(records.Records) > 0 {
-			logger.WithFields(logging.Fields{
-				"Shard Id":          *shardId,
-				"Records len":       len(records.Records),
-				"Source Table":      ss.checkpointPK.sourceTable,
-				"Destination Table": ss.checkpointPK.dstTable,
-			}).Debug("Shard sync, writing records")
-			ss.writeRecords(records.Records, shard)
+		if len(records) > 0 {
+			logField["record length"] = len(records)
+			logger.WithFields(logField).Debug("shard synced, start writing records")
+			ss.writeRecords(records, shard)
 		}
-		shardIterator = records.NextShardIterator
 	}
 	// Completed shard processing
-	logger.WithFields(logging.Fields{
-		"Shard Id":          *shardId,
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
-	}).Debug("Shard Iterator returns nil")
-	ss.markShardCompleted(shardId)
+	logger.WithFields(logField).Debug("shard Iterator returns nil")
+	ss.markShardCompleted(shard.ShardId)
 }
 
 // Iterate through the records
@@ -145,10 +112,7 @@ func (ss *syncState) writeRecords(
 	for _, r := range records {
 		err = nil
 		switch *r.EventName {
-		case "MODIFY":
-			// same as insert
-			fallthrough
-		case "INSERT":
+		case "MODIFY", "INSERT":
 			err = ss.insertRecord(r.Dynamodb.NewImage)
 		case "REMOVE":
 			err = ss.removeRecord(r.Dynamodb.Keys)
@@ -197,40 +161,32 @@ func (ss *syncState) writeRecords(
 	}
 }
 
-// Insert this record in the dst table
-func (ss *syncState) insertRecord(item map[string]*dynamodb.AttributeValue) error {
-	var err error
-
+// insertRecord inserts the record into the dst table
+func (ss *syncState) insertRecord(item map[string]*dynamodb.AttributeValue) (err error) {
 	input := &dynamodb.PutItemInput{
 		Item:      item,
 		TableName: aws.String(ss.tableConfig.DstTable),
 	}
 	for i := 1; i <= maxRetries; i++ {
-		_, err = ss.dstDynamo.PutItem(input)
-		if err == nil {
-			return nil
-		} else {
-			backoff(i)
+		if _, err = ss.dstDynamo.PutItem(input); err == nil || i == maxRetries {
+			break
 		}
+		backoff(i)
 	}
-	return err
+	return
 }
 
-// Remove this record from the dst table
-func (ss *syncState) removeRecord(item map[string]*dynamodb.AttributeValue) error {
-	var err error
-
+// removeRecord removes the record from the dst table
+func (ss *syncState) removeRecord(item map[string]*dynamodb.AttributeValue) (err error) {
 	input := &dynamodb.DeleteItemInput{
 		Key:       item,
 		TableName: aws.String(ss.tableConfig.DstTable),
 	}
-	for i := 0; i < maxRetries; i++ {
-		_, err = ss.dstDynamo.DeleteItem(input)
-		if err == nil {
-			return nil
-		} else {
-			backoff(i)
+	for i := 1; i <= maxRetries; i++ {
+		if _, err = ss.dstDynamo.DeleteItem(input); err == nil || i == maxRetries {
+			break
 		}
+		backoff(i)
 	}
-	return err
+	return
 }
