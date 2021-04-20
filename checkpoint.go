@@ -90,39 +90,6 @@ func (ss *syncState) readCheckpoint() {
 	}
 }
 
-// Given a primaryKey, return whether it exists in the
-// checkpoint dynamodb table
-func (ss *syncState) isCheckpointFound() bool {
-	input := &dynamodb.GetItemInput{
-		TableName: aws.String(ddbTable),
-		Key: map[string]*dynamodb.AttributeValue{
-			sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
-			dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
-		},
-	}
-	result, err := ddbClient.GetItem(input)
-
-	if err != nil {
-		logger.WithFields(logging.Fields{
-			"Error":             err,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Error("Failed to read from checkpoint table")
-		return false
-	}
-
-	if result.Item == nil {
-		return false
-	}
-
-	logger.WithFields(logging.Fields{
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
-	}).Debug("Found checkpoint record")
-
-	return true
-}
-
 // updateCheckpointLocal updates the checkpoint for `key's` local state sync
 func (ss *syncState) updateCheckpointLocal(
 	sequenceNumber string,
@@ -213,35 +180,6 @@ func (ss *syncState) updateTimestampRemote(timestamp time.Time) {
 	}
 }
 
-// We might need to drop stale checkpoints and expired shards
-// while doing a fresh start
-func (ss *syncState) dropCheckpoint() {
-	// Check if this item exists in checkpoint table
-	if !ss.isCheckpointFound() {
-		return
-	}
-	input := &dynamodb.DeleteItemInput{
-		Key: map[string]*dynamodb.AttributeValue{
-			sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
-			dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
-		},
-		TableName: aws.String(ddbTable),
-	}
-	_, err := ddbClient.DeleteItem(input)
-	if err != nil {
-		logger.WithFields(logging.Fields{
-			"Error":             err,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Error("Error in dropping checkpoint")
-	} else {
-		logger.WithFields(logging.Fields{
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Debug("Dropped checkpoint successfully")
-	}
-}
-
 // Remove checkpoint for <primaryKey, shardId> from the local state[key]
 func (ss *syncState) expireCheckpointLocal(shardId *string) {
 	// Remove from activeShardProcessors
@@ -312,4 +250,48 @@ func (ss *syncState) expireCheckpointRemote(shardId string) {
 	}
 
 	ss.checkpointLock.Unlock()
+}
+
+// isCheckpointFound checks if the checkpointPK exists in the checkpoint dynamodb table
+func (ss *syncState) isCheckpointFound() bool {
+	result, err := ddbClient.GetItem(&dynamodb.GetItemInput{
+		TableName: aws.String(ddbTable),
+		Key: map[string]*dynamodb.AttributeValue{
+			sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
+			dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
+		},
+	})
+	if err != nil {
+		logger.WithFields(logging.Fields{
+			"src table": ss.checkpointPK.sourceTable,
+			"dst table": ss.checkpointPK.dstTable,
+			"error":     err,
+		}).Error("failed to get item from checkpoint table")
+		return false
+	}
+	return result.Item != nil
+}
+
+// dropCheckpoint drops stale checkpoints and expired shards for a fresh start
+func (ss *syncState) dropCheckpoint() {
+	if !ss.isCheckpointFound() {
+		return
+	}
+	logField := logging.Fields{
+		"src Table": ss.checkpointPK.sourceTable,
+		"dst Table": ss.checkpointPK.dstTable,
+	}
+	_, err := ddbClient.DeleteItem(&dynamodb.DeleteItemInput{
+		TableName: aws.String(ddbTable),
+		Key: map[string]*dynamodb.AttributeValue{
+			sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
+			dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
+		},
+	})
+	if err != nil {
+		logField["error"] = err
+		logger.WithFields(logField).Error("failed to drop checkpoint")
+	} else {
+		logger.WithFields(logField).Debug("dropped checkpoint successfully")
+	}
 }
