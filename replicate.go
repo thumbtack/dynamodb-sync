@@ -91,8 +91,8 @@ func (ss *syncState) copyTable() error {
 	// Fix up the r/w capacity of src and dst tables
 	// Save the old values to reset the values once we are done copying
 	isSourceThroughputChanged, isDstThroughputChanged := false, false
-	sourceCapacity := ss.getCapacity(ss.tableConfig.SrcTable, ss.srcDynamo)
-	dstCapacity := ss.getCapacity(ss.tableConfig.DstTable, ss.dstDynamo)
+	sourceCapacity, _ := getCapacity(ss.tableConfig.SrcTable, ss.srcDynamo)
+	dstCapacity, _ := getCapacity(ss.tableConfig.DstTable, ss.dstDynamo)
 	srcDynamo := ss.srcDynamo
 	dstDynamo := ss.dstDynamo
 
@@ -159,13 +159,13 @@ func (ss *syncState) copyTable() error {
 
 	// Reset table capacity to original values
 	if isSourceThroughputChanged {
-		err := ss.updateCapacity(ss.tableConfig.SrcTable, sourceCapacity, srcDynamo)
+		err := ss.updateCapacity(ss.tableConfig.SrcTable, *sourceCapacity, srcDynamo)
 		if err != nil {
 			logger.Errorf("Failed to reset capacity for table: %s", ss.checkpointPK.sourceTable)
 		}
 	}
 	if isDstThroughputChanged {
-		err := ss.updateCapacity(ss.tableConfig.DstTable, dstCapacity, dstDynamo)
+		err := ss.updateCapacity(ss.tableConfig.DstTable, *dstCapacity, dstDynamo)
 		if err != nil {
 			logger.Errorf("Failed to reset capacity for table: %s", ss.checkpointPK.dstTable)
 		}

@@ -1,9 +1,7 @@
 package main
 
 import (
-	"errors"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -244,131 +242,40 @@ func (ss *syncState) updateCapacity(
 	return nil
 }
 
-// Since we are interested in the read capacity of the source table,
-// and write capacity of the destination table, this functions returns
-// read(src) and write(dst) as a struct
-func (ss *syncState) getCapacity(
-	tableName string,
-	dynamo *dynamodb.DynamoDB,
-) provisionedThroughput {
-	input := &dynamodb.DescribeTableInput{
+// getCapacity returns the read and write capacity of the given table
+func getCapacity(tableName string, dynamo *dynamodb.DynamoDB) (*provisionedThroughput, error) {
+	output, err := dynamo.DescribeTable(&dynamodb.DescribeTableInput{
 		TableName: aws.String(tableName),
-	}
-	for i := 0; i < maxRetries; i++ {
-		output, err := dynamo.DescribeTable(input)
-		if err != nil {
-			logger.WithFields(logging.Fields{
-				"Error": err,
-				"Table": tableName,
-			}).Error("Error in reading provisioned throughput")
-		} else {
-			result := output.Table.ProvisionedThroughput
-			logger.WithFields(logging.Fields{
-				"Table":          tableName,
-				"Read Capacity":  *result.ReadCapacityUnits,
-				"Write Capacity": *result.WriteCapacityUnits,
-			}).Info("Fetched provisioned throughput of table")
-			return provisionedThroughput{
-				*result.ReadCapacityUnits,
-				*result.WriteCapacityUnits,
-			}
-		}
-	}
-	return provisionedThroughput{-1, -1}
-}
-
-func (ss *syncState) getTableSize(table string, dynamo *dynamodb.DynamoDB) int64 {
-	var size int64 = 0
-	input := &dynamodb.DescribeTableInput{
-		TableName: aws.String(table),
-	}
-
-	for i := 0; i < maxRetries; i++ {
-		output, err := dynamo.DescribeTable(input)
-		if err != nil {
-			logger.WithFields(logging.Fields{
-				"Error": err,
-				"Table": table,
-			}).Debug("Error in getting table size")
-		} else {
-			size = *output.Table.TableSizeBytes
-		}
-	}
-
-	return size
-}
-
-func (ss *syncState) createTable(properties *dynamodb.DescribeTableOutput) error {
-	logger.WithFields(logging.Fields{
-		"Destination Table": ss.checkpointPK.dstTable,
-	}).Info("Creating table")
-
-	input := &dynamodb.CreateTableInput{
-		TableName:            aws.String(ss.tableConfig.DstTable),
-		KeySchema:            properties.Table.KeySchema,
-		AttributeDefinitions: properties.Table.AttributeDefinitions,
-		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
-			ReadCapacityUnits:  properties.Table.ProvisionedThroughput.ReadCapacityUnits,
-			WriteCapacityUnits: properties.Table.ProvisionedThroughput.WriteCapacityUnits,
-		},
-	}
-	_, err := ss.dstDynamo.CreateTable(input)
-
-	// Wait for table to be created
-	status := ""
-	for status != "ACTIVE" {
-		output, _ := ss.dstDynamo.DescribeTable(&dynamodb.DescribeTableInput{
-			TableName: aws.String(ss.tableConfig.DstTable),
-		})
-		status = *output.Table.TableStatus
-		logger.WithFields(logging.Fields{
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Debug("Waiting for destination table to be created")
-		time.Sleep(1 * time.Second)
-	}
-
-	return err
-}
-
-func (ss *syncState) deleteTable() (err error) {
-	logger.WithFields(logging.Fields{
-		"Destination Table": ss.checkpointPK.dstTable,
-	}).Info("Dropping items from stale table")
-
-	if strings.Contains(strings.ToLower(ss.tableConfig.DstTable), "prod") ||
-		strings.Contains(strings.ToLower(ss.tableConfig.DstTable), "production") {
-		logger.WithFields(logging.Fields{
-			"Destination Table": ss.tableConfig.DstTable,
-		}).Info("Warning! The table you are trying to delete might be a " +
-			"production table. Double check the source and destination tables.")
-		return errors.New("will not delete a table with `production` in its name")
-	}
-
-	input := &dynamodb.DeleteTableInput{
-		TableName: aws.String(ss.tableConfig.DstTable),
-	}
-
-	for i := 0; i < maxRetries; i++ {
-		_, err = ss.dstDynamo.DeleteTable(input)
-		if err != nil {
-			logger.WithFields(logging.Fields{
-				"Destination Table": ss.tableConfig.DstTable,
-			}).Debug("Failed to delete table. Retry in progress")
-		} else {
-			break
-		}
-	}
-
+	})
 	if err != nil {
 		logger.WithFields(logging.Fields{
-			"Destination Table": ss.checkpointPK.dstTable,
-			"Error":             err,
-		}).Info("Failed to delete table")
-	} else {
-		logger.WithFields(logging.Fields{
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Info("Deleted dynamodb table")
+			"error": err,
+			"table": tableName,
+		}).Error("failed to fetch provisioned throughput")
+		return nil, err
 	}
+	throughput := provisionedThroughput{
+		readCapacity:  *output.Table.ProvisionedThroughput.ReadCapacityUnits,
+		writeCapacity: *output.Table.ProvisionedThroughput.WriteCapacityUnits,
+	}
+	logger.WithFields(logging.Fields{
+		"table":      tableName,
+		"throughput": throughput,
+	}).Info("fetched provisioned throughput of table")
+	return &throughput, nil
+}
 
-	return err
+// getTableSize returns the size, in bytes, of the given table
+func getTableSize(table string, dynamo *dynamodb.DynamoDB) (*int64, error) {
+	output, err := dynamo.DescribeTable(&dynamodb.DescribeTableInput{
+		TableName: aws.String(table),
+	})
+	if err != nil {
+		logger.WithFields(logging.Fields{
+			"error": err,
+			"table": table,
+		}).Error("failed to get the table size")
+		return nil, err
+	}
+	return output.Table.TableSizeBytes, nil
 }
