@@ -9,38 +9,34 @@ import (
 // Check if a shard is already processed
 func (ss *syncState) isShardProcessed(shardId *string) bool {
 	ss.activeShardLock.RLock()
+	_, ok := ss.activeShardProcessors[*shardId]
+	ss.activeShardLock.RUnlock()
+
 	logFields := logging.Fields{
 		"Source Table":      ss.checkpointPK.sourceTable,
 		"Destination Table": ss.checkpointPK.dstTable,
 		"Shard Id":          *shardId,
 	}
 	logger.WithFields(logFields).Debug("Checking if shard processing is completed")
-	_, ok := ss.activeShardProcessors[*shardId]
 	if !ok {
 		logger.WithFields(logFields).Debug("Shard processing complete")
 	} else {
 		logger.WithFields(logFields).Debug("Shard processing not yet complete")
 	}
-	ss.activeShardLock.RUnlock()
 	return !ok
-}
-
-// Mark a shardId as completed
-func (ss *syncState) markShardCompleted(shardId *string) {
-	ss.expireCheckpointLocal(shardId)
-	ss.expireCheckpointRemote(*shardId)
 }
 
 // TRIM_HORIZON indicates we want to read from the beginning of the shard
 // AFTER_SEQUENCE_NUMBER, and providing a sequence number (from the checkpoint
 // allows us to read the shard from that point
 func (ss *syncState) getShardIteratorInput(
-	shardId string, streamArn string,
+	shardId, streamArn string,
 ) *dynamodbstreams.GetShardIteratorInput {
-	var shardIteratorInput *dynamodbstreams.GetShardIteratorInput
 	ss.checkpointLock.RLock()
 	_, ok := ss.checkpoint[shardId]
 	ss.checkpointLock.RUnlock()
+
+	var shardIteratorInput *dynamodbstreams.GetShardIteratorInput
 	if !ok {
 		// New shard
 		shardIteratorInput = &dynamodbstreams.GetShardIteratorInput{
@@ -60,11 +56,17 @@ func (ss *syncState) getShardIteratorInput(
 
 	logger.WithFields(logging.Fields{
 		"Shard Id":          shardId,
-		"sharditeratorType": shardIteratorInput.ShardIteratorType,
+		"shardIteratorType": shardIteratorInput.ShardIteratorType,
 		"StreamARN":         streamArn,
 		"Source Table":      ss.checkpointPK.sourceTable,
 		"Destination Table": ss.checkpointPK.dstTable,
 	}).Debug("ShardIterator")
 
 	return shardIteratorInput
+}
+
+// Mark a shardId as completed
+func (ss *syncState) markShardCompleted(shardId *string) {
+	ss.expireCheckpointLocal(shardId)
+	ss.expireCheckpointRemote(*shardId)
 }

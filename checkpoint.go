@@ -20,7 +20,7 @@ const (
 
 // Update checkpoint locally, and update checkpoint dynamodb table
 func (ss *syncState) updateCheckpoint(sequenceNumber string, shard *dynamodbstreams.Shard) {
-	timestamp := time.Now().Format(time.RFC3339)
+	timestamp := time.Now()
 	if shard != nil {
 		ss.updateCheckpointLocal(sequenceNumber, shard, timestamp)
 		ss.updateCheckpointRemote(shard.ShardId, timestamp)
@@ -28,7 +28,7 @@ func (ss *syncState) updateCheckpoint(sequenceNumber string, shard *dynamodbstre
 }
 
 func (ss *syncState) updateCheckpointTimestamp() {
-	timestamp := time.Now().Format(time.RFC3339)
+	timestamp := time.Now()
 	ss.updateTimestampLocal(timestamp)
 	ss.updateTimestampRemote(timestamp)
 }
@@ -90,56 +90,18 @@ func (ss *syncState) readCheckpoint() {
 	}
 }
 
-// Given a primaryKey, return whether it exists in the
-// checkpoint dynamodb table
-func (ss *syncState) isCheckpointFound() bool {
-	input := &dynamodb.GetItemInput{
-		TableName: aws.String(ddbTable),
-		Key: map[string]*dynamodb.AttributeValue{
-			sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
-			dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
-		},
-	}
-	result, err := ddbClient.GetItem(input)
-
-	if err != nil {
-		logger.WithFields(logging.Fields{
-			"Error":             err,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Error("Failed to read from checkpoint table")
-		return false
-	}
-
-	if result.Item == nil {
-		return false
-	}
-
-	logger.WithFields(logging.Fields{
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
-	}).Debug("Found checkpoint record")
-
-	return true
-}
-
-// Update the checkpoint for `key's` local state
-// sync  : timestamp,
-// 		  checkpoint[`shardId`]: `sequenceNumber`
+// updateCheckpointLocal updates the checkpoint for `key's` local state sync
 func (ss *syncState) updateCheckpointLocal(
 	sequenceNumber string,
 	shard *dynamodbstreams.Shard,
-	timestamp string,
+	timestamp time.Time,
 ) {
-	ss.timestamp, _ = time.Parse(time.RFC3339, timestamp)
+	ss.timestamp = timestamp
 	ss.checkpoint[*shard.ShardId] = sequenceNumber
 }
 
-// Update the checkpoint for `key` in the checkpoint dynamodb table
-func (ss *syncState) updateCheckpointRemote(
-	shardId *string,
-	timestamp string,
-) {
+// updateCheckpointRemote updates the checkpoint for `key` in the checkpoint dynamodb table
+func (ss *syncState) updateCheckpointRemote(shardId *string, timestamp time.Time) {
 	data, _ := json.Marshal(ss.checkpoint)
 	tableKey := map[string]*dynamodb.AttributeValue{
 		sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
@@ -155,7 +117,7 @@ func (ss *syncState) updateCheckpointRemote(
 		},
 		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
 			":val": {B: data},
-			":ts":  {S: aws.String(timestamp)},
+			":ts":  {S: aws.String(timestamp.Format(time.RFC3339))},
 		},
 		UpdateExpression: aws.String("SET #CP = :val, #TS = :ts"),
 	}
@@ -182,19 +144,11 @@ func (ss *syncState) updateCheckpointRemote(
 	}
 }
 
-func (ss *syncState) updateTimestampLocal(timestamp string) {
-	var err error
-	ss.timestamp, err = time.Parse(time.RFC3339, timestamp)
-	if err != nil {
-		logger.WithFields(logging.Fields{
-			"Error":             err,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Error("Failed to update local timestamp")
-	}
+func (ss *syncState) updateTimestampLocal(timestamp time.Time) {
+	ss.timestamp = timestamp
 }
 
-func (ss *syncState) updateTimestampRemote(timestamp string) {
+func (ss *syncState) updateTimestampRemote(timestamp time.Time) {
 	tableKey := map[string]*dynamodb.AttributeValue{
 		sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
 		dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
@@ -206,7 +160,7 @@ func (ss *syncState) updateTimestampRemote(timestamp string) {
 			"#TS": aws.String(timestp),
 		},
 		ExpressionAttributeValues: map[string]*dynamodb.AttributeValue{
-			":ts": {S: aws.String(timestamp)},
+			":ts": {S: aws.String(timestamp.Format(time.RFC3339))},
 		},
 		UpdateExpression: aws.String("SET #TS = :ts"),
 	}
@@ -223,35 +177,6 @@ func (ss *syncState) updateTimestampRemote(timestamp string) {
 			"Source Table":      ss.checkpointPK.sourceTable,
 			"Destination Table": ss.checkpointPK.dstTable,
 		}).Debug("Successfully updated checkpoint timestamp")
-	}
-}
-
-// We might need to drop stale checkpoints and expired shards
-// while doing a fresh start
-func (ss *syncState) dropCheckpoint() {
-	// Check if this item exists in checkpoint table
-	if !ss.isCheckpointFound() {
-		return
-	}
-	input := &dynamodb.DeleteItemInput{
-		Key: map[string]*dynamodb.AttributeValue{
-			sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
-			dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
-		},
-		TableName: aws.String(ddbTable),
-	}
-	_, err := ddbClient.DeleteItem(input)
-	if err != nil {
-		logger.WithFields(logging.Fields{
-			"Error":             err,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Error("Error in dropping checkpoint")
-	} else {
-		logger.WithFields(logging.Fields{
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
-		}).Debug("Dropped checkpoint successfully")
 	}
 }
 
@@ -291,8 +216,7 @@ func (ss *syncState) expireCheckpointLocal(shardId *string) {
 // Remove checkpoint for <primaryKey, shardId> from the checkpoint dynamodb table
 func (ss *syncState) expireCheckpointRemote(shardId string) {
 	data, _ := json.Marshal(ss.expiredShards)
-	timestamp := ss.timestamp.Format(time.RFC3339)
-	ss.updateCheckpointRemote(&shardId, timestamp)
+	ss.updateCheckpointRemote(&shardId, ss.timestamp)
 
 	ss.checkpointLock.Lock()
 	input := &dynamodb.UpdateItemInput{
@@ -326,4 +250,48 @@ func (ss *syncState) expireCheckpointRemote(shardId string) {
 	}
 
 	ss.checkpointLock.Unlock()
+}
+
+// isCheckpointFound checks if the checkpointPK exists in the checkpoint dynamodb table
+func (ss *syncState) isCheckpointFound() bool {
+	result, err := ddbClient.GetItem(&dynamodb.GetItemInput{
+		TableName: aws.String(ddbTable),
+		Key: map[string]*dynamodb.AttributeValue{
+			sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
+			dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
+		},
+	})
+	if err != nil {
+		logger.WithFields(logging.Fields{
+			"src table": ss.checkpointPK.sourceTable,
+			"dst table": ss.checkpointPK.dstTable,
+			"error":     err,
+		}).Error("failed to get item from checkpoint table")
+		return false
+	}
+	return result.Item != nil
+}
+
+// dropCheckpoint drops stale checkpoints and expired shards for a fresh start
+func (ss *syncState) dropCheckpoint() {
+	if !ss.isCheckpointFound() {
+		return
+	}
+	logField := logging.Fields{
+		"src Table": ss.checkpointPK.sourceTable,
+		"dst Table": ss.checkpointPK.dstTable,
+	}
+	_, err := ddbClient.DeleteItem(&dynamodb.DeleteItemInput{
+		TableName: aws.String(ddbTable),
+		Key: map[string]*dynamodb.AttributeValue{
+			sourceTable: {S: aws.String(ss.checkpointPK.sourceTable)},
+			dstTable:    {S: aws.String(ss.checkpointPK.dstTable)},
+		},
+	})
+	if err != nil {
+		logField["error"] = err
+		logger.WithFields(logField).Error("failed to drop checkpoint")
+	} else {
+		logger.WithFields(logField).Debug("dropped checkpoint successfully")
+	}
 }
