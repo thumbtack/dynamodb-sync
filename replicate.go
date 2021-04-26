@@ -75,62 +75,66 @@ func (ss *syncState) replicate(quit <-chan bool) {
 	}
 }
 
-// Copy table from src to dst
-// Read workers read from src table and write to a channel
-// Write workers read the items from the channel and write
-// to the dst table
-// Once all the workers in the readWorker group are done,
-// we close the channel, and wait for the writeWorker group
-// to finish
+// copyTable copies the items from the source table to the destination table.
+// The read workers read from source table and write to a channel, while The write workers read the
+// items from the channel and write to the destination table.
+// Once all the workers in the readWorker group are done, the channel will be closed and waiting for
+// the writeWorker group to finish.
 func (ss *syncState) copyTable() error {
 	logger.WithFields(logging.Fields{
 		"Source Table":      ss.checkpointPK.sourceTable,
 		"Destination Table": ss.checkpointPK.dstTable,
 	}).Info("Copying dynamodb tables")
 
-	// Fix up the r/w capacity of src and dst tables
-	// Save the old values to reset the values once we are done copying
-	isSourceThroughputChanged, isDstThroughputChanged := false, false
-	sourceCapacity, _ := getCapacity(ss.tableConfig.SrcTable, ss.srcDynamo)
+	srcCapacity, _ := getCapacity(ss.tableConfig.SrcTable, ss.srcDynamo)
 	dstCapacity, _ := getCapacity(ss.tableConfig.DstTable, ss.dstDynamo)
-	srcDynamo := ss.srcDynamo
-	dstDynamo := ss.dstDynamo
 
-	if sourceCapacity.readCapacity != 0 && ss.tableConfig.ReadQPS > sourceCapacity.readCapacity {
+	// bump the capacity for the source table if the billing mode is provisioned
+	if srcCapacity.readCapacity != 0 {
 		newCapacity := provisionedThroughput{
-			ss.tableConfig.ReadQPS,
-			sourceCapacity.writeCapacity,
+			readCapacity:  srcCapacity.readCapacity + ss.tableConfig.ReadQPS,
+			writeCapacity: srcCapacity.writeCapacity,
 		}
-		if err := ss.updateCapacity(ss.tableConfig.SrcTable, newCapacity, srcDynamo); err != nil {
-			logger.WithFields(logging.Fields{"Table": ss.checkpointPK.sourceTable}).
-				Error("Unable to update capacity, won't proceed with copy")
+		if err := updateCapacity(ss.tableConfig.SrcTable, newCapacity, ss.srcDynamo); err != nil {
+			logger.WithFields(logging.Fields{
+				"table": ss.checkpointPK.sourceTable,
+			}).Error("failed to update src table capacity, stop proceeding")
 			return err
 		}
-		isSourceThroughputChanged = true
+		defer func() {
+			err := updateCapacity(ss.tableConfig.SrcTable, *srcCapacity, ss.srcDynamo)
+			if err != nil {
+				logger.Errorf("failed to reset capacity for %s", ss.checkpointPK.sourceTable)
+			}
+		}()
 	}
 
-	if dstCapacity.writeCapacity != 0 && ss.tableConfig.WriteQPS > dstCapacity.writeCapacity {
+	// bump the capacity for the destination table if the billing mode is provisioned
+	if dstCapacity.writeCapacity != 0 {
 		newCapacity := provisionedThroughput{
-			dstCapacity.readCapacity,
-			ss.tableConfig.WriteQPS,
+			readCapacity:  dstCapacity.readCapacity,
+			writeCapacity: dstCapacity.writeCapacity + ss.tableConfig.WriteQPS,
 		}
-		if err := ss.updateCapacity(ss.tableConfig.DstTable, newCapacity, dstDynamo); err != nil {
-			logger.WithFields(logging.Fields{"Table": ss.checkpointPK.dstTable}).
-				Error("Unable to update capacity, won't proceed with copy")
+		if err := updateCapacity(ss.tableConfig.DstTable, newCapacity, ss.dstDynamo); err != nil {
+			logger.WithFields(logging.Fields{
+				"table": ss.checkpointPK.dstTable,
+			}).Error("failed to update dst table capacity, stop proceeding")
 			return err
 		}
-		isDstThroughputChanged = true
+		defer func() {
+			err := updateCapacity(ss.tableConfig.DstTable, *dstCapacity, ss.dstDynamo)
+			if err != nil {
+				logger.Errorf("failed to reset capacity for %s", ss.checkpointPK.dstTable)
+			}
+		}()
 	}
 
-	var writerWG, readerWG sync.WaitGroup
+	var readerWG, writerWG sync.WaitGroup
 	items := make(chan []map[string]*dynamodb.AttributeValue)
-	writeWorkers := ss.tableConfig.WriteWorkers
-	readWorkers := ss.tableConfig.ReadWorkers
 
-	writerWG.Add(writeWorkers)
-
+	writerWG.Add(ss.tableConfig.WriteWorkers)
 	rl := rate.NewLimiter(rate.Limit(ss.tableConfig.WriteQPS), int(ss.tableConfig.WriteQPS))
-	for i := 0; i < writeWorkers; i++ {
+	for i := 0; i < ss.tableConfig.WriteWorkers; i++ {
 		logger.WithFields(logging.Fields{
 			"Write Worker":      i,
 			"Source Table":      ss.checkpointPK.sourceTable,
@@ -138,8 +142,8 @@ func (ss *syncState) copyTable() error {
 		}).Debug("Starting copy table write worker..")
 		go ss.writeTable(items, &writerWG, i, rl)
 	}
-	readerWG.Add(readWorkers)
-	for i := 0; i < readWorkers; i++ {
+	readerWG.Add(ss.tableConfig.ReadWorkers)
+	for i := 0; i < ss.tableConfig.ReadWorkers; i++ {
 		logger.WithFields(logging.Fields{
 			"Read Worker":       i,
 			"Source Table":      ss.checkpointPK.sourceTable,
@@ -156,20 +160,6 @@ func (ss *syncState) copyTable() error {
 		"Source Table":      ss.checkpointPK.sourceTable,
 		"Destination Table": ss.checkpointPK.dstTable,
 	}).Info("Finished copying dynamodb tables")
-
-	// Reset table capacity to original values
-	if isSourceThroughputChanged {
-		err := ss.updateCapacity(ss.tableConfig.SrcTable, *sourceCapacity, srcDynamo)
-		if err != nil {
-			logger.Errorf("Failed to reset capacity for table: %s", ss.checkpointPK.sourceTable)
-		}
-	}
-	if isDstThroughputChanged {
-		err := ss.updateCapacity(ss.tableConfig.DstTable, *dstCapacity, dstDynamo)
-		if err != nil {
-			logger.Errorf("Failed to reset capacity for table: %s", ss.checkpointPK.dstTable)
-		}
-	}
 	return nil
 }
 

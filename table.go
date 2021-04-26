@@ -175,41 +175,28 @@ func (ss *syncState) readTable(
 	}
 }
 
-func (ss *syncState) updateCapacity(
+func updateCapacity(
 	tableName string,
 	newThroughput provisionedThroughput,
 	dynamo *dynamodb.DynamoDB,
-) (err error) {
+) error {
 	logger.WithFields(logging.Fields{
-		"Table":              tableName,
-		"New Read Capacity":  newThroughput.readCapacity,
-		"New Write Capacity": newThroughput.writeCapacity,
-	}).Info("Updating capacity")
-	input := &dynamodb.UpdateTableInput{
+		"table":   tableName,
+		"new RCU": newThroughput.readCapacity,
+		"new WCU": newThroughput.writeCapacity,
+	}).Info("updating capacity")
+	_, err := dynamo.UpdateTable(&dynamodb.UpdateTableInput{
 		TableName: aws.String(tableName),
 		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
 			ReadCapacityUnits:  aws.Int64(newThroughput.readCapacity),
 			WriteCapacityUnits: aws.Int64(newThroughput.writeCapacity),
 		},
-	}
-
-	for i := 0; i < maxRetries; i++ {
-		_, err = dynamo.UpdateTable(input)
-		if err != nil {
-			logger.WithFields(logging.Fields{
-				"Error": err,
-				"Table": tableName,
-			}).Error("Error in updating table capacity")
-		} else {
-			break
-		}
-	}
-
+	})
 	if err != nil {
 		logger.WithFields(logging.Fields{
-			"Error": err,
-			"Table": tableName,
-		}).Error("Failed to update table capacity")
+			"table": tableName,
+			"error": err,
+		}).Error("fail to update table capacity")
 		return err
 	}
 
@@ -249,8 +236,8 @@ func getCapacity(tableName string, dynamo *dynamodb.DynamoDB) (*provisionedThrou
 	})
 	if err != nil {
 		logger.WithFields(logging.Fields{
-			"error": err,
 			"table": tableName,
+			"error": err,
 		}).Error("failed to fetch provisioned throughput")
 		return nil, err
 	}
