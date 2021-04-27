@@ -24,8 +24,8 @@ const (
 // is more than 24 hours old, returns True. Else, False
 func (ss *syncState) isFreshStart() bool {
 	logger.WithFields(logging.Fields{
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
+		"src table":    ss.checkpointPK.sourceTable,
+		"dst table":    ss.checkpointPK.dstTable,
 		"State Timestamp":   ss.timestamp,
 	}).Info("Checking if fresh start")
 	return ss.timestamp.IsZero() || time.Now().Sub(ss.timestamp) > streamRetentionHours
@@ -76,19 +76,17 @@ func (ss *syncState) replicate(quit <-chan bool) {
 }
 
 // copyTable copies the items from the source table to the destination table.
-// The read workers read from source table and write to a channel, while The write workers read the
-// items from the channel and write to the destination table.
+// The read workers read the items from source table and write to a channel.
+// The write workers read the items from the channel and write to the destination table.
 // Once all the workers in the readWorker group are done, the channel will be closed and waiting for
 // the writeWorker group to finish.
 func (ss *syncState) copyTable() error {
 	logger.WithFields(logging.Fields{
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
-	}).Info("Copying dynamodb tables")
+		"src table": ss.checkpointPK.sourceTable,
+		"dst table": ss.checkpointPK.dstTable,
+	}).Info("copying tables")
 
 	srcCapacity, _ := getCapacity(ss.tableConfig.SrcTable, ss.srcDynamo)
-	dstCapacity, _ := getCapacity(ss.tableConfig.DstTable, ss.dstDynamo)
-
 	// bump the capacity for the source table if the billing mode is provisioned
 	if srcCapacity.readCapacity != 0 {
 		newCapacity := provisionedThroughput{
@@ -109,6 +107,7 @@ func (ss *syncState) copyTable() error {
 		}()
 	}
 
+	dstCapacity, _ := getCapacity(ss.tableConfig.DstTable, ss.dstDynamo)
 	// bump the capacity for the destination table if the billing mode is provisioned
 	if dstCapacity.writeCapacity != 0 {
 		newCapacity := provisionedThroughput{
@@ -136,18 +135,18 @@ func (ss *syncState) copyTable() error {
 	rl := rate.NewLimiter(rate.Limit(ss.tableConfig.WriteQPS), int(ss.tableConfig.WriteQPS))
 	for i := 0; i < ss.tableConfig.WriteWorkers; i++ {
 		logger.WithFields(logging.Fields{
-			"Write Worker":      i,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
+			"Write Worker": i,
+			"src table":    ss.checkpointPK.sourceTable,
+			"dst table":    ss.checkpointPK.dstTable,
 		}).Debug("Starting copy table write worker..")
 		go ss.writeTable(items, &writerWG, i, rl)
 	}
 	readerWG.Add(ss.tableConfig.ReadWorkers)
 	for i := 0; i < ss.tableConfig.ReadWorkers; i++ {
 		logger.WithFields(logging.Fields{
-			"Read Worker":       i,
-			"Source Table":      ss.checkpointPK.sourceTable,
-			"Destination Table": ss.checkpointPK.dstTable,
+			"Read Worker": i,
+			"src table":   ss.checkpointPK.sourceTable,
+			"dst table":   ss.checkpointPK.dstTable,
 		}).Debug("Starting copy table read worker..")
 		go ss.readTable(items, &readerWG, i)
 	}
@@ -157,9 +156,9 @@ func (ss *syncState) copyTable() error {
 	writerWG.Wait()
 
 	logger.WithFields(logging.Fields{
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
-	}).Info("Finished copying dynamodb tables")
+		"src table": ss.checkpointPK.sourceTable,
+		"dst table": ss.checkpointPK.dstTable,
+	}).Info("finished copying tables")
 	return nil
 }
 
@@ -167,8 +166,8 @@ func (ss *syncState) copyTable() error {
 // from a particular checkpoint
 func (ss *syncState) streamSyncStart() error {
 	logger.WithFields(logging.Fields{
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
+		"src table": ss.checkpointPK.sourceTable,
+		"dst table": ss.checkpointPK.dstTable,
 	}).Info("Starting DynamoDB Stream Sync")
 	streamArn, err := ss.getStreamArn()
 	if err != nil {
@@ -213,9 +212,9 @@ func (ss *syncState) streamSync(streamArn string) (err error) {
 			if ok {
 				// 	Case 1: Shard has been processed in an earlier run
 				logger.WithFields(logging.Fields{
-					"Source Table":      ss.checkpointPK.sourceTable,
-					"Destination Table": ss.checkpointPK.dstTable,
-					"Shard Id":          *shard.ShardId,
+					"src table": ss.checkpointPK.sourceTable,
+					"dst table": ss.checkpointPK.dstTable,
+					"Shard Id":  *shard.ShardId,
 				}).Debug("Shard processed in an earlier run")
 				continue
 			}
@@ -227,9 +226,9 @@ func (ss *syncState) streamSync(streamArn string) (err error) {
 			if !ok {
 				// Case 2: New shard - start processing
 				logger.WithFields(logging.Fields{
-					"Source Table":      ss.checkpointPK.sourceTable,
-					"Destination Table": ss.checkpointPK.dstTable,
-					"Shard Id":          *shard.ShardId,
+					"src table": ss.checkpointPK.sourceTable,
+					"dst table": ss.checkpointPK.dstTable,
+					"Shard Id":  *shard.ShardId,
 				}).Debug("Starting processor for shard")
 
 				ss.activeShardLock.Lock()
@@ -240,9 +239,9 @@ func (ss *syncState) streamSync(streamArn string) (err error) {
 			} else {
 				// Case 3: Shard is currently being processed
 				logger.WithFields(logging.Fields{
-					"Source Table":      ss.checkpointPK.sourceTable,
-					"Destination Table": ss.checkpointPK.dstTable,
-					"Shard Id":          *shard.ShardId,
+					"src table": ss.checkpointPK.sourceTable,
+					"dst table": ss.checkpointPK.dstTable,
+					"Shard Id":  *shard.ShardId,
 				}).Debug("Shard is already being processed")
 			}
 		}
@@ -257,9 +256,9 @@ func (ss *syncState) streamSync(streamArn string) (err error) {
 
 			numShards = 0
 			logger.WithFields(logging.Fields{
-				"Source Table":      ss.checkpointPK.sourceTable,
-				"Destination Table": ss.checkpointPK.dstTable,
-				"SleepTime":         shardEnumerateInterval,
+				"src table": ss.checkpointPK.sourceTable,
+				"dst table": ss.checkpointPK.dstTable,
+				"SleepTime": shardEnumerateInterval,
 			}).Debug("Sleeping before refreshing list of shards")
 
 			time.Sleep(shardEnumerateInterval)
