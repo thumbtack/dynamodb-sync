@@ -24,9 +24,9 @@ const (
 // is more than 24 hours old, returns True. Else, False
 func (ss *syncState) isFreshStart() bool {
 	logger.WithFields(logging.Fields{
-		"src table":    ss.checkpointPK.sourceTable,
-		"dst table":    ss.checkpointPK.dstTable,
-		"State Timestamp":   ss.timestamp,
+		"src table":       ss.checkpointPK.sourceTable,
+		"dst table":       ss.checkpointPK.dstTable,
+		"State Timestamp": ss.timestamp,
 	}).Info("Checking if fresh start")
 	return ss.timestamp.IsZero() || time.Now().Sub(ss.timestamp) > streamRetentionHours
 }
