@@ -15,4 +15,4 @@ jobs:
       - name: check format
         run: if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then exit 1; fi
       - name: test
-        run: go test -v ./...
+        run: make test
