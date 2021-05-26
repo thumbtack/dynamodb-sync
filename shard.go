@@ -13,9 +13,9 @@ func (ss *syncState) isShardProcessed(shardId *string) bool {
 	ss.activeShardLock.RUnlock()
 
 	logFields := logging.Fields{
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
-		"Shard Id":          *shardId,
+		"src table": ss.checkpointPK.sourceTable,
+		"dst table": ss.checkpointPK.dstTable,
+		"shard ID":  *shardId,
 	}
 	logger.WithFields(logFields).Debug("Checking if shard processing is completed")
 	if !ok {
@@ -36,22 +36,17 @@ func (ss *syncState) getShardIteratorInput(
 	_, ok := ss.checkpoint[shardId]
 	ss.checkpointLock.RUnlock()
 
-	var shardIteratorInput *dynamodbstreams.GetShardIteratorInput
+	shardIteratorInput := &dynamodbstreams.GetShardIteratorInput{
+		ShardId:           aws.String(shardId),
+		StreamArn:         aws.String(streamArn),
+	}
 	if !ok {
 		// New shard
-		shardIteratorInput = &dynamodbstreams.GetShardIteratorInput{
-			ShardId:           aws.String(shardId),
-			ShardIteratorType: aws.String("TRIM_HORIZON"),
-			StreamArn:         aws.String(streamArn),
-		}
+		shardIteratorInput.SetShardIteratorType("TRIM_HORIZON")
 	} else {
 		// Shard partially processed. Need to continue from the point where we left off
-		shardIteratorInput = &dynamodbstreams.GetShardIteratorInput{
-			ShardId:           aws.String(shardId),
-			SequenceNumber:    aws.String(ss.checkpoint[shardId]),
-			ShardIteratorType: aws.String(shardIteratorPointer),
-			StreamArn:         aws.String(streamArn),
-		}
+		shardIteratorInput.SetShardIteratorType(shardIteratorPointer)
+		shardIteratorInput.SetSequenceNumber(ss.checkpoint[shardId])
 	}
 
 	logger.WithFields(logging.Fields{
