@@ -37,8 +37,8 @@ func (ss *syncState) getShardIteratorInput(
 	ss.checkpointLock.RUnlock()
 
 	shardIteratorInput := &dynamodbstreams.GetShardIteratorInput{
-		ShardId:           aws.String(shardId),
-		StreamArn:         aws.String(streamArn),
+		ShardId:   aws.String(shardId),
+		StreamArn: aws.String(streamArn),
 	}
 	if !ok {
 		// New shard
