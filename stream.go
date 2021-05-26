@@ -24,8 +24,8 @@ func (ss *syncState) getStreamArn() (string, error) {
 	}
 	streamArn := describeTableResult.Table.LatestStreamArn
 	logger.WithFields(logging.Fields{
-		"StreamARN":    *streamArn,
-		"Source Table": ss.checkpointPK.sourceTable,
+		"stream arn": *streamArn,
+		"src table":  ss.checkpointPK.sourceTable,
 	}).Info("Latest StreamARN")
 	return *streamArn, nil
 }
@@ -99,17 +99,20 @@ func (ss *syncState) shardSyncStart(streamArn string, shard *dynamodbstreams.Sha
 	ss.markShardCompleted(shard.ShardId)
 }
 
-// Iterate through the records
-// Depending on the action needed (MODIFY/INSERT/DELETE)
-// perform required action on the dst table
-// Once every `updateCheckpointThreshold` number of records are written,
-// update the checkpoint
-func (ss *syncState) writeRecords(
-	records []*dynamodbstreams.Record,
-	shard *dynamodbstreams.Shard,
-) {
+// writeRecords iterates through the records. Depending on the action needed (MODIFY/INSERT/DELETE),
+// perform required action on the dst table.
+// Once every `updateCheckpointThreshold` number of records are written, update the checkpoint.
+func (ss *syncState) writeRecords(records []*dynamodbstreams.Record, shard *dynamodbstreams.Shard) {
 	var err error
 	for _, r := range records {
+		logField := logging.Fields{
+			"record":    *r.Dynamodb,
+			"event":     *r.EventName,
+			"src table": ss.checkpointPK.sourceTable,
+			"dst table": ss.checkpointPK.dstTable,
+			"shard ID":  *shard.ShardId,
+		}
+
 		err = nil
 		switch *r.EventName {
 		case "MODIFY", "INSERT":
@@ -117,40 +120,18 @@ func (ss *syncState) writeRecords(
 		case "REMOVE":
 			err = ss.removeRecord(r.Dynamodb.Keys)
 		default:
-			logger.WithFields(logging.Fields{
-				"Event":             *r.EventName,
-				"Record":            *r.Dynamodb,
-				"Source Table":      ss.checkpointPK.sourceTable,
-				"Destination Table": ss.checkpointPK.dstTable,
-				"Shard Id":          *shard.ShardId,
-			}).Error("Unknown event on record")
+			logger.WithFields(logField).Error("unknown event on the record")
 		}
 
 		if err != nil {
-			logger.WithFields(logging.Fields{
-				"Record":            *r.Dynamodb,
-				"Event":             *r.EventName,
-				"Source Table":      ss.checkpointPK.sourceTable,
-				"Destination Table": ss.checkpointPK.dstTable,
-				"Shard Id":          *shard.ShardId,
-				"Error":             err,
-			}).Error("Failed to handle event")
+			logField["error"] = err
+			logger.WithFields(logField).Error("failed to handle the event")
 		} else {
-			logger.WithFields(logging.Fields{
-				"Record":            *r.Dynamodb,
-				"Event":             *r.EventName,
-				"Source Table":      ss.checkpointPK.sourceTable,
-				"Shard Id":          *shard.ShardId,
-				"Destination Table": ss.checkpointPK.dstTable,
-			}).Debug("Handled event successfully")
+			logger.WithFields(logField).Debug("successfully handled the event")
 			ss.checkpointLock.Lock()
 			ss.recordCounter++
-			logger.WithFields(logging.Fields{
-				"Counter":           ss.recordCounter,
-				"Source Table":      ss.checkpointPK.sourceTable,
-				"Destination Table": ss.checkpointPK.dstTable,
-				"Shard Id":          *shard.ShardId,
-			}).Debug("Record counter")
+			logField["counter"] = ss.recordCounter
+			logger.WithFields(logField).Debug("record counter")
 			if ss.recordCounter == ss.tableConfig.UpdateCheckpointThreshold {
 				ss.updateCheckpoint(*r.Dynamodb.SequenceNumber, shard)
 				// reset the recordCounter
