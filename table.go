@@ -109,11 +109,9 @@ func (ss *syncState) writeTable(
 	}
 }
 
-// Scan the table, and put the items in the `items` channel
-// It is not necessary that the entire table be scanned in a
-// single call to `scan`
-// So, we scan the table in a loop until the len(lastEvaluatedKey)
-// is zero
+// readTable scans the table, and put the items into the `items` channel.
+// It is not necessary that the entire table is scanned in a single call to `scan`,
+// so we scan the table in a loop until the len(lastEvaluatedKey) is zero.
 func (ss *syncState) readTable(
 	items chan []map[string]*dynamodb.AttributeValue,
 	readerWG *sync.WaitGroup,
@@ -129,20 +127,18 @@ func (ss *syncState) readTable(
 			Segment:        aws.Int64(int64(id)),
 			TotalSegments:  aws.Int64(int64(ss.tableConfig.ReadWorkers)),
 		}
-
 		if len(lastEvaluatedKey) > 0 {
 			input.ExclusiveStartKey = lastEvaluatedKey
 		}
 
 		successfulScan := false
-
 		for i := 0; i < maxRetries; i++ {
 			result, err := ss.srcDynamo.Scan(input)
 			if err != nil {
 				logger.WithFields(logging.Fields{
-					"Error":        err,
-					"Source Table": ss.checkpointPK.sourceTable,
-				}).Debug("Scan returned error")
+					"error":     err,
+					"src table": ss.checkpointPK.sourceTable,
+				}).Warn("Scan returned error")
 				backoff(i)
 			} else {
 				successfulScan = true
@@ -152,7 +148,7 @@ func (ss *syncState) readTable(
 					"Scanned items size": len(result.Items),
 					"Scanned Count":      *result.ScannedCount,
 					"LastEvaluatedKey":   lastEvaluatedKey,
-					"Source Table":       ss.checkpointPK.sourceTable,
+					"src table":          ss.checkpointPK.sourceTable,
 				}).Debug("Scan successful")
 				break
 			}
@@ -161,14 +157,13 @@ func (ss *syncState) readTable(
 		if successfulScan {
 			if len(lastEvaluatedKey) == 0 {
 				logger.WithFields(logging.Fields{
-					"Source Table": ss.checkpointPK.sourceTable,
+					"src table": ss.checkpointPK.sourceTable,
 				}).Debug("Scan completed")
 				return
 			}
 		} else {
 			logger.WithFields(logging.Fields{
-				"Source Table":       ss.checkpointPK.sourceTable,
-				"Number of Attempts": maxRetries,
+				"src table": ss.checkpointPK.sourceTable,
 			}).Error("Scan failed")
 			os.Exit(1)
 		}
@@ -209,14 +204,14 @@ func updateCapacity(
 		output, err := dynamo.DescribeTable(statusInput)
 		if err != nil {
 			logger.WithFields(logging.Fields{
-				"Error": err,
-				"Table": tableName,
+				"error": err,
+				"table": tableName,
 			}).Error("Failed to get table status")
 			break
 		} else {
 			status = *output.Table.TableStatus
 			logger.WithFields(logging.Fields{
-				"Table": tableName,
+				"table": tableName,
 			}).Debug("Updating table throughput")
 			time.Sleep(1 * time.Second)
 		}
