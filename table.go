@@ -11,6 +11,18 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// provisionedThroughput is the basic throughput struct
+type provisionedThroughput struct {
+	readCapacity  int64
+	writeCapacity int64
+}
+
+// Throughput describes the table throughput, include both the table and its gsi
+type Throughput struct {
+	table provisionedThroughput
+	gsi   map[string]provisionedThroughput
+}
+
 // Maximum size of a batch can be 25 items
 // Batch Writes item to dst table
 func (ss *syncState) writeBatch(
@@ -170,32 +182,92 @@ func (ss *syncState) readTable(
 	}
 }
 
-func updateCapacity(
+func increaseCapacity(
 	tableName string,
-	newThroughput provisionedThroughput,
 	dynamo *dynamodb.DynamoDB,
+	originalCapacity Throughput,
+	deltaCapacity provisionedThroughput,
 ) error {
 	logger.WithFields(logging.Fields{
-		"table":   tableName,
-		"new RCU": newThroughput.readCapacity,
-		"new WCU": newThroughput.writeCapacity,
-	}).Info("updating capacity")
+		"table":            tableName,
+		"originalCapacity": originalCapacity,
+		"added RCU":        deltaCapacity.readCapacity,
+		"added WCU":        deltaCapacity.writeCapacity,
+	}).Info("increasing capacity")
 	_, err := dynamo.UpdateTable(&dynamodb.UpdateTableInput{
 		TableName: aws.String(tableName),
 		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
-			ReadCapacityUnits:  aws.Int64(newThroughput.readCapacity),
-			WriteCapacityUnits: aws.Int64(newThroughput.writeCapacity),
+			ReadCapacityUnits: aws.Int64(
+				originalCapacity.table.readCapacity + deltaCapacity.readCapacity),
+			WriteCapacityUnits: aws.Int64(
+				originalCapacity.table.writeCapacity + deltaCapacity.writeCapacity),
 		},
+		GlobalSecondaryIndexUpdates: generateGsiUpdate(originalCapacity, &deltaCapacity),
 	})
 	if err != nil {
 		logger.WithFields(logging.Fields{
 			"table": tableName,
 			"error": err,
-		}).Error("fail to update table capacity")
+		}).Error("failed to increase capacity")
 		return err
 	}
+	waitForTableUpdate(tableName, dynamo)
+	return nil
+}
 
-	// Wait for table to be updated
+func decreaseCapacity(
+	tableName string,
+	dynamo *dynamodb.DynamoDB,
+	originalCapacity Throughput,
+) error {
+	logger.WithFields(logging.Fields{
+		"table":            tableName,
+		"originalCapacity": originalCapacity,
+	}).Info("decreasing capacity")
+	_, err := dynamo.UpdateTable(&dynamodb.UpdateTableInput{
+		TableName: aws.String(tableName),
+		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
+			ReadCapacityUnits:  aws.Int64(originalCapacity.table.readCapacity),
+			WriteCapacityUnits: aws.Int64(originalCapacity.table.writeCapacity),
+		},
+		GlobalSecondaryIndexUpdates: generateGsiUpdate(originalCapacity, nil),
+	})
+	if err != nil {
+		logger.WithFields(logging.Fields{
+			"table": tableName,
+			"error": err,
+		}).Error("failed to decrease capacity")
+		return err
+	}
+	waitForTableUpdate(tableName, dynamo)
+	return nil
+}
+
+func generateGsiUpdate(
+	originalCapacity Throughput,
+	deltaCapacity *provisionedThroughput,
+) []*dynamodb.GlobalSecondaryIndexUpdate {
+	var result []*dynamodb.GlobalSecondaryIndexUpdate
+	for indexName, capacity := range originalCapacity.gsi {
+		readCapacity, writeCapacity := capacity.readCapacity, capacity.writeCapacity
+		if deltaCapacity != nil {
+			readCapacity += deltaCapacity.readCapacity
+			writeCapacity += deltaCapacity.writeCapacity
+		}
+		result = append(result, &dynamodb.GlobalSecondaryIndexUpdate{
+			Update: &dynamodb.UpdateGlobalSecondaryIndexAction{
+				IndexName: aws.String(indexName),
+				ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
+					ReadCapacityUnits:  aws.Int64(readCapacity),
+					WriteCapacityUnits: aws.Int64(writeCapacity),
+				},
+			},
+		})
+	}
+	return result
+}
+
+func waitForTableUpdate(tableName string, dynamo *dynamodb.DynamoDB) {
 	status := ""
 	statusInput := &dynamodb.DescribeTableInput{
 		TableName: aws.String(tableName),
@@ -204,28 +276,28 @@ func updateCapacity(
 		output, err := dynamo.DescribeTable(statusInput)
 		if err != nil {
 			logger.WithFields(logging.Fields{
-				"error": err,
-				"table": tableName,
-			}).Error("Failed to get table status")
+				"tableName": tableName,
+				"error":     err,
+			}).Error("failed to get the table status")
+			// likely an internal error from DDB, nothing can be done here
 			break
 		} else {
 			status = *output.Table.TableStatus
 			logger.WithFields(logging.Fields{
-				"table": tableName,
+				"tableName": tableName,
 			}).Debug("Updating table throughput")
 			time.Sleep(1 * time.Second)
 		}
 	}
-
-	logger.WithFields(logging.Fields{
-		"Table": tableName,
-	}).Info("Successfully updated table throughput")
-
-	return nil
+	if status == "ACTIVE" {
+		logger.WithFields(logging.Fields{
+			"Table": tableName,
+		}).Info("Successfully updated table throughput")
+	}
 }
 
-// getCapacity returns the read and write capacity of the given table
-func getCapacity(tableName string, dynamo *dynamodb.DynamoDB) (*provisionedThroughput, error) {
+// getCapacity returns the read and write capacity of the given table and its gsi
+func getCapacity(tableName string, dynamo *dynamodb.DynamoDB) (*Throughput, error) {
 	output, err := dynamo.DescribeTable(&dynamodb.DescribeTableInput{
 		TableName: aws.String(tableName),
 	})
@@ -236,9 +308,20 @@ func getCapacity(tableName string, dynamo *dynamodb.DynamoDB) (*provisionedThrou
 		}).Error("failed to fetch provisioned throughput")
 		return nil, err
 	}
-	throughput := provisionedThroughput{
-		readCapacity:  *output.Table.ProvisionedThroughput.ReadCapacityUnits,
-		writeCapacity: *output.Table.ProvisionedThroughput.WriteCapacityUnits,
+	throughput := Throughput{
+		table: provisionedThroughput{
+			readCapacity:  *output.Table.ProvisionedThroughput.ReadCapacityUnits,
+			writeCapacity: *output.Table.ProvisionedThroughput.WriteCapacityUnits,
+		},
+	}
+	if len(output.Table.GlobalSecondaryIndexes) > 0 {
+		throughput.gsi = map[string]provisionedThroughput{}
+		for _, gsi := range output.Table.GlobalSecondaryIndexes {
+			throughput.gsi[*gsi.IndexName] = provisionedThroughput{
+				readCapacity:  *gsi.ProvisionedThroughput.ReadCapacityUnits,
+				writeCapacity: *gsi.ProvisionedThroughput.WriteCapacityUnits,
+			}
+		}
 	}
 	logger.WithFields(logging.Fields{
 		"table":      tableName,
