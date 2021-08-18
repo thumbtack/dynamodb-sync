@@ -277,7 +277,7 @@ func waitForTableUpdate(tableName string, dynamo *dynamodb.DynamoDB) {
 		if err != nil {
 			logger.WithFields(logging.Fields{
 				"table": tableName,
-				"error":     err,
+				"error": err,
 			}).Error("failed to get the table status")
 			// likely an internal error from DDB, nothing can be done here
 			break
