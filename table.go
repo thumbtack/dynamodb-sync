@@ -276,7 +276,7 @@ func waitForTableUpdate(tableName string, dynamo *dynamodb.DynamoDB) {
 		output, err := dynamo.DescribeTable(statusInput)
 		if err != nil {
 			logger.WithFields(logging.Fields{
-				"tableName": tableName,
+				"table": tableName,
 				"error":     err,
 			}).Error("failed to get the table status")
 			// likely an internal error from DDB, nothing can be done here
@@ -284,7 +284,7 @@ func waitForTableUpdate(tableName string, dynamo *dynamodb.DynamoDB) {
 		} else {
 			status = *output.Table.TableStatus
 			logger.WithFields(logging.Fields{
-				"tableName": tableName,
+				"table": tableName,
 			}).Debug("Updating table throughput")
 			time.Sleep(1 * time.Second)
 		}
