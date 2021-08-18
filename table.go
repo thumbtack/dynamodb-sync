@@ -302,10 +302,6 @@ func getCapacity(tableName string, dynamo *dynamodb.DynamoDB) (*Throughput, erro
 		TableName: aws.String(tableName),
 	})
 	if err != nil {
-		logger.WithFields(logging.Fields{
-			"table": tableName,
-			"error": err,
-		}).Error("failed to fetch provisioned throughput")
 		return nil, err
 	}
 	throughput := Throughput{

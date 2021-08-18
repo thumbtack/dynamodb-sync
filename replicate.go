@@ -89,6 +89,10 @@ func (ss *syncState) copyTable() error {
 	// bump the capacity for the source table if the billing mode is provisioned
 	srcCapacity, err := getCapacity(ss.tableConfig.SrcTable, ss.srcDynamo)
 	if err != nil {
+		logger.WithFields(logging.Fields{
+			"table": ss.tableConfig.SrcTable,
+			"error": err,
+		}).Error("failed to fetch provisioned throughput")
 		return err
 	}
 	if srcCapacity.table.readCapacity != 0 {
@@ -115,6 +119,10 @@ func (ss *syncState) copyTable() error {
 	// bump the capacity for the destination table if the billing mode is provisioned
 	dstCapacity, err := getCapacity(ss.tableConfig.DstTable, ss.dstDynamo)
 	if err != nil {
+		logger.WithFields(logging.Fields{
+			"table": ss.tableConfig.DstTable,
+			"error": err,
+		}).Error("failed to fetch provisioned throughput")
 		return err
 	}
 	if dstCapacity.table.writeCapacity != 0 {
