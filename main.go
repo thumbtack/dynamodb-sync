@@ -61,12 +61,6 @@ type primaryKey struct {
 	dstTable    string
 }
 
-// Provisioned Read and Write Throughput of the ddb table
-type provisionedThroughput struct {
-	readCapacity  int64
-	writeCapacity int64
-}
-
 type appConfig struct {
 	sync []*syncConfig
 }

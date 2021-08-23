@@ -86,44 +86,62 @@ func (ss *syncState) copyTable() error {
 		"dst table": ss.checkpointPK.dstTable,
 	}).Info("copying tables")
 
-	srcCapacity, _ := getCapacity(ss.tableConfig.SrcTable, ss.srcDynamo)
 	// bump the capacity for the source table if the billing mode is provisioned
-	if srcCapacity.readCapacity != 0 {
-		newCapacity := provisionedThroughput{
-			readCapacity:  srcCapacity.readCapacity + ss.tableConfig.ReadQPS,
-			writeCapacity: srcCapacity.writeCapacity,
+	srcCapacity, err := getCapacity(ss.tableConfig.SrcTable, ss.srcDynamo)
+	if err != nil {
+		logger.WithFields(logging.Fields{
+			"table": ss.tableConfig.SrcTable,
+			"error": err,
+		}).Error("failed to fetch provisioned throughput")
+		return err
+	}
+	if srcCapacity.table.readCapacity != 0 {
+		deltaCapacity := provisionedThroughput{
+			readCapacity: ss.tableConfig.ReadQPS,
 		}
-		if err := updateCapacity(ss.tableConfig.SrcTable, newCapacity, ss.srcDynamo); err != nil {
+		err := increaseCapacity(ss.tableConfig.SrcTable, ss.srcDynamo, *srcCapacity, deltaCapacity)
+		if err != nil {
 			logger.WithFields(logging.Fields{
 				"table": ss.checkpointPK.sourceTable,
-			}).Error("failed to update src table capacity, stop proceeding")
+			}).Error("failed to increase src table capacity, stop proceeding")
 			return err
 		}
 		defer func() {
-			err := updateCapacity(ss.tableConfig.SrcTable, *srcCapacity, ss.srcDynamo)
+			err := decreaseCapacity(ss.tableConfig.SrcTable, ss.srcDynamo, *srcCapacity)
 			if err != nil {
-				logger.Errorf("failed to reset capacity for %s", ss.checkpointPK.sourceTable)
+				logger.WithFields(logging.Fields{
+					"table": ss.checkpointPK.sourceTable,
+				}).Error("failed to reset capacity")
 			}
 		}()
 	}
 
-	dstCapacity, _ := getCapacity(ss.tableConfig.DstTable, ss.dstDynamo)
 	// bump the capacity for the destination table if the billing mode is provisioned
-	if dstCapacity.writeCapacity != 0 {
-		newCapacity := provisionedThroughput{
-			readCapacity:  dstCapacity.readCapacity,
-			writeCapacity: dstCapacity.writeCapacity + ss.tableConfig.WriteQPS,
+	dstCapacity, err := getCapacity(ss.tableConfig.DstTable, ss.dstDynamo)
+	if err != nil {
+		logger.WithFields(logging.Fields{
+			"table": ss.tableConfig.DstTable,
+			"error": err,
+		}).Error("failed to fetch provisioned throughput")
+		return err
+	}
+	if dstCapacity.table.writeCapacity != 0 {
+		deltaCapacity := provisionedThroughput{
+			writeCapacity: ss.tableConfig.WriteQPS,
 		}
-		if err := updateCapacity(ss.tableConfig.DstTable, newCapacity, ss.dstDynamo); err != nil {
+		err := increaseCapacity(ss.tableConfig.DstTable, ss.dstDynamo, *dstCapacity, deltaCapacity)
+		if err != nil {
 			logger.WithFields(logging.Fields{
 				"table": ss.checkpointPK.dstTable,
-			}).Error("failed to update dst table capacity, stop proceeding")
+			}).Error("failed to increase dst table capacity, stop proceeding")
 			return err
 		}
 		defer func() {
-			err := updateCapacity(ss.tableConfig.DstTable, *dstCapacity, ss.dstDynamo)
+			err := decreaseCapacity(ss.tableConfig.DstTable, ss.dstDynamo, *dstCapacity)
 			if err != nil {
-				logger.Errorf("failed to reset capacity for %s", ss.checkpointPK.dstTable)
+				logger.WithFields(logging.Fields{
+					"table": ss.checkpointPK.dstTable,
+				}).Error("failed to reset capacity")
 			}
 		}()
 	}
@@ -206,16 +224,17 @@ func (ss *syncState) streamSync(streamArn string) (err error) {
 		numShards += len(result.StreamDescription.Shards)
 
 		for _, shard := range result.StreamDescription.Shards {
+			logField := logging.Fields{
+				"src table": ss.checkpointPK.sourceTable,
+				"dst table": ss.checkpointPK.dstTable,
+				"Shard Id":  *shard.ShardId,
+			}
 			ss.checkpointLock.RLock()
 			_, ok := ss.expiredShards[*shard.ShardId]
 			ss.checkpointLock.RUnlock()
 			if ok {
 				// 	Case 1: Shard has been processed in an earlier run
-				logger.WithFields(logging.Fields{
-					"src table": ss.checkpointPK.sourceTable,
-					"dst table": ss.checkpointPK.dstTable,
-					"Shard Id":  *shard.ShardId,
-				}).Debug("Shard processed in an earlier run")
+				logger.WithFields(logField).Debug("Shard processed in an earlier run")
 				continue
 			}
 
@@ -225,11 +244,7 @@ func (ss *syncState) streamSync(streamArn string) (err error) {
 
 			if !ok {
 				// Case 2: New shard - start processing
-				logger.WithFields(logging.Fields{
-					"src table": ss.checkpointPK.sourceTable,
-					"dst table": ss.checkpointPK.dstTable,
-					"Shard Id":  *shard.ShardId,
-				}).Debug("Starting processor for shard")
+				logger.WithFields(logField).Debug("Starting processor for shard")
 
 				ss.activeShardLock.Lock()
 				ss.activeShardProcessors[*shard.ShardId] = true
@@ -238,11 +253,7 @@ func (ss *syncState) streamSync(streamArn string) (err error) {
 				go ss.shardSyncStart(streamArn, shard)
 			} else {
 				// Case 3: Shard is currently being processed
-				logger.WithFields(logging.Fields{
-					"src table": ss.checkpointPK.sourceTable,
-					"dst table": ss.checkpointPK.dstTable,
-					"Shard Id":  *shard.ShardId,
-				}).Debug("Shard is already being processed")
+				logger.WithFields(logField).Debug("Shard is already being processed")
 			}
 		}
 
