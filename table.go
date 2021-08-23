@@ -194,7 +194,7 @@ func increaseCapacity(
 		"added RCU":        deltaCapacity.readCapacity,
 		"added WCU":        deltaCapacity.writeCapacity,
 	}).Info("increasing capacity")
-	_, err := dynamo.UpdateTable(&dynamodb.UpdateTableInput{
+	input := &dynamodb.UpdateTableInput{
 		TableName: aws.String(tableName),
 		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
 			ReadCapacityUnits: aws.Int64(
@@ -202,9 +202,11 @@ func increaseCapacity(
 			WriteCapacityUnits: aws.Int64(
 				originalCapacity.table.writeCapacity + deltaCapacity.writeCapacity),
 		},
-		GlobalSecondaryIndexUpdates: generateGsiUpdate(originalCapacity, &deltaCapacity),
-	})
-	if err != nil {
+	}
+	if len(originalCapacity.gsi) > 0 {
+		input.GlobalSecondaryIndexUpdates = generateGsiUpdate(originalCapacity, &deltaCapacity)
+	}
+	if _, err := dynamo.UpdateTable(input); err != nil {
 		logger.WithFields(logging.Fields{
 			"table": tableName,
 			"error": err,
@@ -224,15 +226,17 @@ func decreaseCapacity(
 		"table":            tableName,
 		"originalCapacity": originalCapacity,
 	}).Info("decreasing capacity")
-	_, err := dynamo.UpdateTable(&dynamodb.UpdateTableInput{
+	input := &dynamodb.UpdateTableInput{
 		TableName: aws.String(tableName),
 		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
 			ReadCapacityUnits:  aws.Int64(originalCapacity.table.readCapacity),
 			WriteCapacityUnits: aws.Int64(originalCapacity.table.writeCapacity),
 		},
-		GlobalSecondaryIndexUpdates: generateGsiUpdate(originalCapacity, nil),
-	})
-	if err != nil {
+	}
+	if len(originalCapacity.gsi) > 0 {
+		input.GlobalSecondaryIndexUpdates = generateGsiUpdate(originalCapacity, nil)
+	}
+	if _, err := dynamo.UpdateTable(input); err != nil {
 		logger.WithFields(logging.Fields{
 			"table": tableName,
 			"error": err,
