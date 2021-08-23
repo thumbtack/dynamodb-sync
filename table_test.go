@@ -1,9 +1,9 @@
 package main
 
 import (
-	"github.com/aws/aws-sdk-go/aws"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/stretchr/testify/assert"
 )
@@ -28,7 +28,7 @@ func Test_generateGsiUpdate(t *testing.T) {
 			originalCapacity: Throughput{
 				table: provisionedThroughput{1, 1},
 				gsi: map[string]provisionedThroughput{
-					"first-gsi": provisionedThroughput{10, 10},
+					"first-gsi": {10, 10},
 				},
 			},
 			deltaCapacity: &provisionedThroughput{5, 5},
