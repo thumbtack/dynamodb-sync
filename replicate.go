@@ -28,7 +28,7 @@ func (ss *syncState) isFreshStart() bool {
 		"dst table":       ss.checkpointPK.dstTable,
 		"State Timestamp": ss.timestamp,
 	}).Info("Checking if fresh start")
-	return ss.timestamp.IsZero() || time.Now().Sub(ss.timestamp) > streamRetentionHours
+	return ss.timestamp.IsZero() || time.Since(ss.timestamp) > streamRetentionHours
 }
 
 func (ss *syncState) replicate(quit <-chan bool) {

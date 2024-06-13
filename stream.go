@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -17,10 +16,8 @@ func (ss *syncState) getStreamArn() (string, error) {
 		TableName: aws.String(ss.tableConfig.SrcTable),
 	})
 	if err != nil || describeTableResult.Table.StreamSpecification == nil {
-		return "", errors.New(fmt.Sprintf(
-			"Failed to get StreamARN for table %s. Check if stream is enabled",
-			ss.checkpointPK.sourceTable),
-		)
+		return "", fmt.Errorf("failed to get StreamARN for table %s. Check if stream is enabled",
+			ss.checkpointPK.sourceTable)
 	}
 	streamArn := describeTableResult.Table.LatestStreamArn
 	logger.WithFields(logging.Fields{
