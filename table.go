@@ -213,8 +213,7 @@ func increaseCapacity(
 		}).Error("failed to increase capacity")
 		return err
 	}
-	waitForTableUpdate(tableName, dynamo)
-	return nil
+	return waitForTableUpdate(tableName, dynamo)
 }
 
 func decreaseCapacity(
@@ -243,8 +242,7 @@ func decreaseCapacity(
 		}).Error("failed to decrease capacity")
 		return err
 	}
-	waitForTableUpdate(tableName, dynamo)
-	return nil
+	return waitForTableUpdate(tableName, dynamo)
 }
 
 func generateGsiUpdate(
@@ -271,7 +269,7 @@ func generateGsiUpdate(
 	return result
 }
 
-func waitForTableUpdate(tableName string, dynamo *dynamodb.DynamoDB) {
+func waitForTableUpdate(tableName string, dynamo *dynamodb.DynamoDB) error {
 	status := ""
 	statusInput := &dynamodb.DescribeTableInput{
 		TableName: aws.String(tableName),
@@ -284,20 +282,19 @@ func waitForTableUpdate(tableName string, dynamo *dynamodb.DynamoDB) {
 				"error": err,
 			}).Error("failed to get the table status")
 			// likely an internal error from DDB, nothing can be done here
-			break
+			return err
 		} else {
 			status = *output.Table.TableStatus
 			logger.WithFields(logging.Fields{
 				"table": tableName,
 			}).Debug("Updating table throughput")
-			time.Sleep(1 * time.Second)
+			time.Sleep(3 * time.Second)
 		}
 	}
-	if status == "ACTIVE" {
-		logger.WithFields(logging.Fields{
-			"Table": tableName,
-		}).Info("Successfully updated table throughput")
-	}
+	logger.WithFields(logging.Fields{
+		"Table": tableName,
+	}).Info("Successfully updated table throughput")
+	return nil
 }
 
 // getCapacity returns the read and write capacity of the given table and its gsi

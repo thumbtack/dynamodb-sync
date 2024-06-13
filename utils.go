@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
@@ -44,7 +43,7 @@ func getSession(region, endpoint string, httpClient *http.Client) *session.Sessi
 // parseConfigFile reads and parses the config file
 func parseConfigFile(filepath string) (configs []*syncConfig, err error) {
 	var data []byte
-	data, err = ioutil.ReadFile(filepath)
+	data, err = os.ReadFile(filepath)
 	if err == nil {
 		err = json.Unmarshal(data, &configs)
 	}

@@ -3,7 +3,7 @@ module github.com/thumbtack/dynamodb-sync
 go 1.22
 
 require (
-	github.com/aws/aws-sdk-go v1.50.32
+	github.com/aws/aws-sdk-go v1.54.1
 	github.com/sirupsen/logrus v1.9.3
 	github.com/stretchr/testify v1.9.0
 	golang.org/x/time v0.5.0
