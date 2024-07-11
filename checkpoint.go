@@ -20,9 +20,9 @@ const (
 
 func (ss *syncState) readCheckpoint() {
 	logger.WithFields(logging.Fields{
-		"Table":             ddbTable,
-		"Source Table":      ss.tableConfig.SrcTable,
-		"Destination Table": ss.tableConfig.DstTable,
+		"table":     ddbTable,
+		"src_table": ss.tableConfig.SrcTable,
+		"dst_table": ss.tableConfig.DstTable,
 	}).Info("Reading checkpoint table")
 
 	result, err := ddbClient.GetItem(&dynamodb.GetItemInput{
@@ -34,9 +34,9 @@ func (ss *syncState) readCheckpoint() {
 	})
 	if err != nil {
 		logger.WithFields(logging.Fields{
-			"Error":             err,
-			"Source Table":      ss.tableConfig.SrcTable,
-			"Destination Table": ss.tableConfig.DstTable,
+			"src_table": ss.tableConfig.SrcTable,
+			"dst_table": ss.tableConfig.DstTable,
+			"error":     err,
 		}).Error("Failed to read from checkpoint table")
 	}
 	if result == nil || result.Item == nil {
@@ -46,9 +46,9 @@ func (ss *syncState) readCheckpoint() {
 		err = json.Unmarshal(result.Item[checkpt].B, &ss.checkpoint)
 		if err != nil {
 			logger.WithFields(logging.Fields{
-				"Source Table":      ss.tableConfig.SrcTable,
-				"Destination Table": ss.tableConfig.DstTable,
-				"Error":             err,
+				"src_table": ss.tableConfig.SrcTable,
+				"dst_table": ss.tableConfig.DstTable,
+				"error":     err,
 			}).Error("Failed to unmarshal checkpoint")
 		}
 	}
@@ -56,20 +56,20 @@ func (ss *syncState) readCheckpoint() {
 		err = json.Unmarshal(result.Item[expiredShards].B, &ss.expiredShards)
 		if err != nil {
 			logger.WithFields(logging.Fields{
-				"Source Table":      ss.tableConfig.SrcTable,
-				"Destination Table": ss.tableConfig.DstTable,
-				"Error":             err,
+				"src_table": ss.tableConfig.SrcTable,
+				"dst_table": ss.tableConfig.DstTable,
+				"error":     err,
 			}).Error("Failed to unmarshal expired shards")
 		}
 	}
 	ss.timestamp, err = time.Parse(time.RFC3339, *result.Item[timestp].S)
 	if err != nil {
 		logger.WithFields(logging.Fields{
-			"Checkpoint timestamp": *result.Item[timestp].S,
-			"Layout Pattern":       time.RFC3339,
-			"Source Table":         ss.tableConfig.SrcTable,
-			"Destination Table":    ss.tableConfig.DstTable,
-			"Error":                err,
+			"checkpoint_timestamp": *result.Item[timestp].S,
+			"layout_pattern":       time.RFC3339,
+			"src_table":            ss.tableConfig.SrcTable,
+			"dst_table":            ss.tableConfig.DstTable,
+			"error":                err,
 		}).Error("Failed to parse checkpoint timestamp")
 	}
 }
@@ -113,11 +113,11 @@ func (ss *syncState) updateCheckpointRemote(shardId *string, timestamp time.Time
 		UpdateExpression: aws.String("SET #CP = :val, #TS = :ts"),
 	})
 	logField := logging.Fields{
-		"src table":  ss.checkpointPK.sourceTable,
-		"dst table":  ss.checkpointPK.dstTable,
-		"seq number": ss.checkpoint[*shardId],
+		"src_table":  ss.checkpointPK.sourceTable,
+		"dst_table":  ss.checkpointPK.dstTable,
+		"seq_number": ss.checkpoint[*shardId],
 		"timestamp":  timestamp,
-		"shard ID":   *shardId,
+		"shard_id":   *shardId,
 	}
 	if err != nil {
 		logField["error"] = err
@@ -153,8 +153,8 @@ func (ss *syncState) updateTimestampRemote(timestamp time.Time) {
 		UpdateExpression: aws.String("SET #TS = :ts"),
 	})
 	logField := logging.Fields{
-		"src table": ss.checkpointPK.sourceTable,
-		"dst table": ss.checkpointPK.dstTable,
+		"src_table": ss.checkpointPK.sourceTable,
+		"dst_table": ss.checkpointPK.dstTable,
 	}
 	if err != nil {
 		logField["error"] = err
@@ -167,9 +167,9 @@ func (ss *syncState) updateTimestampRemote(timestamp time.Time) {
 // Remove checkpoint for <primaryKey, shardId> from the local state[key]
 func (ss *syncState) expireCheckpointLocal(shardId *string) {
 	logField := logging.Fields{
-		"src table": ss.checkpointPK.sourceTable,
-		"dst table": ss.checkpointPK.dstTable,
-		"shard ID":  *shardId,
+		"src_table": ss.checkpointPK.sourceTable,
+		"dst_table": ss.checkpointPK.dstTable,
+		"shard_id":  *shardId,
 	}
 
 	// Remove from activeShardProcessors
@@ -214,9 +214,9 @@ func (ss *syncState) expireCheckpointRemote(shardId string) {
 	ss.checkpointLock.Unlock()
 
 	logField := logging.Fields{
-		"src table": ss.checkpointPK.sourceTable,
-		"dst table": ss.checkpointPK.dstTable,
-		"shard ID":  shardId,
+		"src_table": ss.checkpointPK.sourceTable,
+		"dst_table": ss.checkpointPK.dstTable,
+		"shard_id":  shardId,
 	}
 	if err != nil {
 		logField["error"] = err
@@ -237,8 +237,8 @@ func (ss *syncState) isCheckpointFound() bool {
 	})
 	if err != nil {
 		logger.WithFields(logging.Fields{
-			"src table": ss.checkpointPK.sourceTable,
-			"dst table": ss.checkpointPK.dstTable,
+			"src_table": ss.checkpointPK.sourceTable,
+			"dst_table": ss.checkpointPK.dstTable,
 			"error":     err,
 		}).Error("failed to get item from checkpoint table")
 		return false
@@ -252,8 +252,8 @@ func (ss *syncState) dropCheckpoint() {
 		return
 	}
 	logField := logging.Fields{
-		"src Table": ss.checkpointPK.sourceTable,
-		"dst Table": ss.checkpointPK.dstTable,
+		"src_table": ss.checkpointPK.sourceTable,
+		"dst_table": ss.checkpointPK.dstTable,
 	}
 	_, err := ddbClient.DeleteItem(&dynamodb.DeleteItemInput{
 		TableName: aws.String(ddbTable),

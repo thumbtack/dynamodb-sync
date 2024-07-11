@@ -13,9 +13,9 @@ func (ss *syncState) isShardProcessed(shardId *string) bool {
 	ss.activeShardLock.RUnlock()
 
 	logFields := logging.Fields{
-		"src table": ss.checkpointPK.sourceTable,
-		"dst table": ss.checkpointPK.dstTable,
-		"shard ID":  *shardId,
+		"src_table": ss.checkpointPK.sourceTable,
+		"dst_table": ss.checkpointPK.dstTable,
+		"shard_id":  *shardId,
 	}
 	logger.WithFields(logFields).Debug("Checking if shard processing is completed")
 	if !ok {
@@ -50,11 +50,11 @@ func (ss *syncState) getShardIteratorInput(
 	}
 
 	logger.WithFields(logging.Fields{
-		"Shard Id":          shardId,
-		"shardIteratorType": shardIteratorInput.ShardIteratorType,
-		"StreamARN":         streamArn,
-		"Source Table":      ss.checkpointPK.sourceTable,
-		"Destination Table": ss.checkpointPK.dstTable,
+		"shard_id":            shardId,
+		"shard_iterator_type": *shardIteratorInput.ShardIteratorType,
+		"stream_arn":          streamArn,
+		"src_table":           ss.checkpointPK.sourceTable,
+		"dst_table":           ss.checkpointPK.dstTable,
 	}).Debug("ShardIterator")
 
 	return shardIteratorInput

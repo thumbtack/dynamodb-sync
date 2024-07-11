@@ -21,18 +21,18 @@ func (ss *syncState) getStreamArn() (string, error) {
 	}
 	streamArn := describeTableResult.Table.LatestStreamArn
 	logger.WithFields(logging.Fields{
-		"stream arn": *streamArn,
-		"src table":  ss.checkpointPK.sourceTable,
+		"stream_arn": *streamArn,
+		"src_table":  ss.checkpointPK.sourceTable,
 	}).Info("Latest StreamARN")
 	return *streamArn, nil
 }
 
 func (ss *syncState) shardSyncStart(streamArn string, shard *dynamodbstreams.Shard) {
 	logField := logging.Fields{
-		"shardID":        *shard.ShardId,
-		"parent shardID": *shard.ParentShardId,
-		"src table":      ss.checkpointPK.sourceTable,
-		"dst table":      ss.checkpointPK.dstTable,
+		"shard_id":        *shard.ShardId,
+		"parent_shard_id": *shard.ParentShardId,
+		"src_table":       ss.checkpointPK.sourceTable,
+		"dst_table":       ss.checkpointPK.dstTable,
 	}
 	// process parent shard before child
 	if shard.ParentShardId != nil {
@@ -103,11 +103,11 @@ func (ss *syncState) writeRecords(records []*dynamodbstreams.Record, shard *dyna
 	var err error
 	for _, r := range records {
 		logField := logging.Fields{
-			"record":    *r.Dynamodb,
+			"record":    (*r.Dynamodb).String(),
 			"event":     *r.EventName,
-			"src table": ss.checkpointPK.sourceTable,
-			"dst table": ss.checkpointPK.dstTable,
-			"shard ID":  *shard.ShardId,
+			"src_table": ss.checkpointPK.sourceTable,
+			"dst_table": ss.checkpointPK.dstTable,
+			"shard_id":  *shard.ShardId,
 		}
 
 		err = nil
