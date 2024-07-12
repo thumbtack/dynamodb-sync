@@ -40,7 +40,7 @@ func (sync *syncState) writeBatch(
 
 		consumedCapacity = append(consumedCapacity, output.ConsumedCapacity...)
 
-		if output.UnprocessedItems != nil {
+		if len(output.UnprocessedItems) != 0 {
 			logger.WithFields(logging.Fields{
 				"Unprocessed Items Size": len(output.UnprocessedItems),
 				"Source Table":           key.sourceTable,
