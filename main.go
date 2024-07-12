@@ -25,12 +25,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"strings"
 
-	//"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
-	"github.com/thumbtack/go/lib/metrics"
-	//"github.com/thumbtack/go/lib/monitoring"
 	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
@@ -40,6 +36,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
 	"github.com/aws/aws-sdk-go/service/dynamodbstreams"
@@ -61,7 +58,6 @@ var ddbTable = os.Getenv(paramCheckpointTable)
 var ddbRegion = os.Getenv(paramCheckpointRegion)
 var ddbEndpoint = os.Getenv(paramCheckpointEndpoint)
 var ddbClient = ddbConfigConnect(ddbRegion, ddbEndpoint, maxRetries, *logger)
-var metricsClient = newMetricsClient()
 
 type config struct {
 	SrcTable                  string `json:"src_table"`
@@ -77,7 +73,7 @@ type config struct {
 	ReadQps                   int64  `json:"read_qps"`
 	WriteQps                  int64  `json:"write_qps"`
 	UpdateCheckpointThreshold int    `json:"update_checkpoint_threshold"`
-	EnableStreaming           *bool   `json:"enable_streaming"`
+	EnableStreaming           *bool  `json:"enable_streaming"`
 }
 
 // Config file is read and dumped into this struct
@@ -108,12 +104,12 @@ func NewSyncState(tableConfig config) *syncState {
 	var stream *dynamodbstreams.DynamoDBStreams
 
 	tr := &http.Transport{
-		MaxIdleConns:       2048,
-		MaxConnsPerHost:    1024,
+		MaxIdleConns:    2048,
+		MaxConnsPerHost: 1024,
 	}
 	httpClient := &http.Client{
-		Timeout:8*time.Second,
-		Transport:tr}
+		Timeout:   8 * time.Second,
+		Transport: tr}
 
 	srcSess := session.Must(
 		session.NewSession(
@@ -169,8 +165,8 @@ func NewSyncState(tableConfig config) *syncState {
 }
 
 type appConfig struct {
-	sync          []config
-	verbose       bool
+	sync    []config
+	verbose bool
 }
 
 // The primary key of the Checkpoint ddb table, of the stream etc
@@ -197,15 +193,6 @@ func ddbConfigConnect(region string, endpoint string, maxRetries int, logger log
 				WithEndpoint(endpoint).
 				WithMaxRetries(maxRetries),
 		)))
-}
-
-func newMetricsClient() (client metrics.Client) {
-	client, err := metrics.NewAlfredAppClient()
-	if err != nil {
-		logger.WithFields(logging.Fields{"Error":err}).Error("Error in initializing metrics")
-		os.Exit(1)
-	}
-	return client
 }
 
 // app constructor
@@ -239,8 +226,8 @@ func NewApp() *appConfig {
 	}
 
 	return &appConfig{
-		sync:          tableConfig,
-		verbose:       true,
+		sync:    tableConfig,
+		verbose: true,
 	}
 }
 
@@ -276,7 +263,6 @@ func setDefaults(tableConfig []config) ([]config, error) {
 				"and region are mandatory")
 			continue
 		}
-
 
 		if tableConfig[i].ReadQps == 0 {
 			tableConfig[i].ReadQps = 500

@@ -272,7 +272,7 @@ func (sync *syncState) testStreamSyncWait() {
 }
 
 func (sync *syncState) testExpireShards() {
-	for random, _ := range sync.checkpoint {
+	for random := range sync.checkpoint {
 		k := primaryKey{sync.tableConfig.SrcTable, sync.tableConfig.DstTable}
 		sync.expireCheckpointLocal(k, aws.String(random))
 		sync.expireCheckpointRemote(k, random)

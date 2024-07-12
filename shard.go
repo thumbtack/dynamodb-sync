@@ -12,7 +12,7 @@ import (
 func backoff(i int, s string) {
 	wait := math.Pow(2, float64(i))
 	logger.WithFields(logging.Fields{
-		"Backoff Caller":             s,
+		"Backoff Caller":        s,
 		"Backoff Time(seconds)": wait,
 	}).Info("Backing off")
 	time.Sleep(time.Duration(wait) * time.Second)
