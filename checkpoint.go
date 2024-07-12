@@ -128,7 +128,8 @@ func (sync *syncState) isCheckpointFound(key primaryKey) bool {
 
 // Update the checkpoint for `key's` local state
 // sync  : timestamp,
-// 		  checkpoint[`shardId`]: `sequenceNumber`
+//
+//	checkpoint[`shardId`]: `sequenceNumber`
 func (sync *syncState) updateCheckpointLocal(
 	key primaryKey,
 	sequenceNumber string,

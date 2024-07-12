@@ -1,9 +1,10 @@
 package main
 
 import (
-	"golang.org/x/time/rate"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
@@ -196,8 +197,8 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 	numShards := 0
 
 	type shardStats struct {
-		numShards    int
-		tableName    string
+		numShards int
+		tableName string
 	}
 
 	type activeShardStats struct {
@@ -227,7 +228,7 @@ func (sync *syncState) streamSync(key primaryKey, streamArn string) error {
 		}
 
 		numShards += len(result.StreamDescription.Shards)
-		
+
 		for _, shard := range result.StreamDescription.Shards {
 			sync.checkpointLock.RLock()
 			_, ok := sync.expiredShards[*shard.ShardId]

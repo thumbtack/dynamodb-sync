@@ -2,11 +2,12 @@ package main
 
 import (
 	"errors"
-	"golang.org/x/time/rate"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
@@ -23,36 +24,36 @@ func (sync *syncState) writeBatch(
 	batch map[string][]*dynamodb.WriteRequest,
 	key primaryKey, rl *rate.Limiter, reqCapacity float64,
 	writeBatchSize int64) []*dynamodb.ConsumedCapacity {
-		i := 0
-		r := rl.ReserveN(time.Now(), int(reqCapacity))
-		if !r.OK() {
-			r = rl.ReserveN(time.Now(), int(writeBatchSize))
+	i := 0
+	r := rl.ReserveN(time.Now(), int(reqCapacity))
+	if !r.OK() {
+		r = rl.ReserveN(time.Now(), int(writeBatchSize))
+	}
+	time.Sleep(r.Delay())
+	consumedCapacity := make([]*dynamodb.ConsumedCapacity, 0)
+
+	for len(batch) > 0 {
+		output, _ := sync.dstDynamo.BatchWriteItem(
+			&dynamodb.BatchWriteItemInput{
+				RequestItems: batch,
+			})
+
+		consumedCapacity = append(consumedCapacity, output.ConsumedCapacity...)
+
+		if output.UnprocessedItems != nil {
+			logger.WithFields(logging.Fields{
+				"Unprocessed Items Size": len(output.UnprocessedItems),
+				"Source Table":           key.sourceTable,
+				"Destination Table":      key.dstTable,
+			}).Debug("Some items failed to be processed")
+			// exponential backoff before retrying
+			backoff(i, "BatchWrite")
+			i++
+			// Retry writing items that were not processed
+			batch = output.UnprocessedItems
 		}
-		time.Sleep(r.Delay())
-		consumedCapacity := make([]*dynamodb.ConsumedCapacity, 0)
-
-		for len(batch) > 0 {
-			output,_ := sync.dstDynamo.BatchWriteItem(
-				&dynamodb.BatchWriteItemInput{
-					RequestItems: batch,
-				})
-
-			consumedCapacity = append(consumedCapacity, output.ConsumedCapacity...)
-
-			if output.UnprocessedItems != nil {
-					logger.WithFields(logging.Fields{
-						"Unprocessed Items Size": len(output.UnprocessedItems),
-						"Source Table":           key.sourceTable,
-						"Destination Table":      key.dstTable,
-					}).Debug("Some items failed to be processed")
-					// exponential backoff before retrying
-					backoff(i, "BatchWrite")
-					i++
-					// Retry writing items that were not processed
-					batch = output.UnprocessedItems
-			}
-		}
-		return consumedCapacity
+	}
+	return consumedCapacity
 }
 
 // Group items from the `items` channel into
@@ -192,13 +193,13 @@ func (sync *syncState) updateCapacity(
 
 	var err error
 	logger.WithFields(logging.Fields{
-		"Table":tableName,
-		"New Read Capacity": newThroughput.readCapacity,
+		"Table":              tableName,
+		"New Read Capacity":  newThroughput.readCapacity,
 		"New Write Capacity": newThroughput.writeCapacity}).Info("Updating capacity")
 	input := &dynamodb.UpdateTableInput{
 		TableName: aws.String(tableName),
 		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
-			ReadCapacityUnits: aws.Int64(newThroughput.readCapacity),
+			ReadCapacityUnits:  aws.Int64(newThroughput.readCapacity),
 			WriteCapacityUnits: aws.Int64(newThroughput.writeCapacity),
 		},
 	}
@@ -274,9 +275,9 @@ func (sync *syncState) getCapacity(tableName string, dynamo *dynamodb.DynamoDB) 
 		} else {
 			result := output.Table.ProvisionedThroughput
 			logger.WithFields(logging.Fields{
-				"Table": tableName,
-				"Read Capacity":     *result.ReadCapacityUnits,
-				"Write Capacity":    *result.WriteCapacityUnits,
+				"Table":          tableName,
+				"Read Capacity":  *result.ReadCapacityUnits,
+				"Write Capacity": *result.WriteCapacityUnits,
 			}).Info("Fetched provisioned throughput of table")
 			return provisionedThroughput{
 				*result.ReadCapacityUnits,
@@ -316,9 +317,9 @@ func (sync *syncState) createTable(key primaryKey, properties *dynamodb.Describe
 	}).Info("Creating table")
 
 	input := &dynamodb.CreateTableInput{
-		TableName:             aws.String(sync.tableConfig.DstTable),
-		KeySchema:             properties.Table.KeySchema,
-		AttributeDefinitions:  properties.Table.AttributeDefinitions,
+		TableName:            aws.String(sync.tableConfig.DstTable),
+		KeySchema:            properties.Table.KeySchema,
+		AttributeDefinitions: properties.Table.AttributeDefinitions,
 		ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
 			ReadCapacityUnits:  properties.Table.ProvisionedThroughput.ReadCapacityUnits,
 			WriteCapacityUnits: properties.Table.ProvisionedThroughput.WriteCapacityUnits,
