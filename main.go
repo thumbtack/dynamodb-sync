@@ -106,8 +106,8 @@ func main() {
 	for _, config := range app.sync {
 		key := config.getCheckpointPK()
 		logger.WithFields(logging.Fields{
-			"src table": key.sourceTable,
-			"dst table": key.dstTable,
+			"src_table": key.sourceTable,
+			"dst_table": key.dstTable,
 		}).Info("Launching replication...")
 
 		syncWorker := NewSyncState(config, key)

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -21,6 +22,14 @@ type provisionedThroughput struct {
 type Throughput struct {
 	table provisionedThroughput
 	gsi   map[string]provisionedThroughput
+}
+
+func (p provisionedThroughput) String() string {
+	return fmt.Sprintf("rcu:%d,wcu:%d", p.readCapacity, p.writeCapacity)
+}
+
+func (t Throughput) String() string {
+	return fmt.Sprintf("table:(%s),gsi:(%s)", t.table, t.gsi)
 }
 
 // Maximum size of a batch can be 25 items
@@ -47,9 +56,9 @@ func (ss *syncState) writeBatch(
 
 		if output.UnprocessedItems != nil {
 			logger.WithFields(logging.Fields{
-				"Unprocessed Items Size": len(output.UnprocessedItems),
-				"Source Table":           ss.checkpointPK.sourceTable,
-				"Destination Table":      ss.checkpointPK.dstTable,
+				"unprocessed_items_count": len(output.UnprocessedItems),
+				"src_table":               ss.checkpointPK.sourceTable,
+				"dst_table":               ss.checkpointPK.dstTable,
 			}).Debug("Some items failed to be processed")
 			// exponential backoff before retrying
 			backoff(i)
@@ -86,9 +95,9 @@ func (ss *syncState) writeTable(
 		items, more := <-itemsChan
 		if !more {
 			logger.WithFields(logging.Fields{
-				"Write Worker":      id,
-				"Source Table":      ss.checkpointPK.sourceTable,
-				"Destination Table": ss.checkpointPK.dstTable,
+				"w_worker":  id,
+				"src_table": ss.checkpointPK.sourceTable,
+				"dst_table": ss.checkpointPK.dstTable,
 			}).Debug("Write worker has finished")
 			return
 		}
@@ -149,7 +158,7 @@ func (ss *syncState) readTable(
 			if err != nil {
 				logger.WithFields(logging.Fields{
 					"error":     err,
-					"src table": ss.checkpointPK.sourceTable,
+					"src_table": ss.checkpointPK.sourceTable,
 				}).Warn("Scan returned error")
 				backoff(i)
 			} else {
@@ -157,10 +166,9 @@ func (ss *syncState) readTable(
 				lastEvaluatedKey = result.LastEvaluatedKey
 				items <- result.Items
 				logger.WithFields(logging.Fields{
-					"Scanned items size": len(result.Items),
-					"Scanned Count":      *result.ScannedCount,
-					"LastEvaluatedKey":   lastEvaluatedKey,
-					"src table":          ss.checkpointPK.sourceTable,
+					"scanned_items_size": len(result.Items),
+					"scanned_count":      *result.ScannedCount,
+					"src_table":          ss.checkpointPK.sourceTable,
 				}).Debug("Scan successful")
 				break
 			}
@@ -169,13 +177,13 @@ func (ss *syncState) readTable(
 		if successfulScan {
 			if len(lastEvaluatedKey) == 0 {
 				logger.WithFields(logging.Fields{
-					"src table": ss.checkpointPK.sourceTable,
+					"src_table": ss.checkpointPK.sourceTable,
 				}).Debug("Scan completed")
 				return
 			}
 		} else {
 			logger.WithFields(logging.Fields{
-				"src table": ss.checkpointPK.sourceTable,
+				"src_table": ss.checkpointPK.sourceTable,
 			}).Error("Scan failed")
 			os.Exit(1)
 		}
@@ -189,10 +197,9 @@ func increaseCapacity(
 	deltaCapacity provisionedThroughput,
 ) error {
 	logger.WithFields(logging.Fields{
-		"table":            tableName,
-		"originalCapacity": originalCapacity,
-		"added RCU":        deltaCapacity.readCapacity,
-		"added WCU":        deltaCapacity.writeCapacity,
+		"table":             tableName,
+		"original_capacity": originalCapacity.String(),
+		"added_capacity":    deltaCapacity.String(),
 	}).Info("increasing capacity")
 	input := &dynamodb.UpdateTableInput{
 		TableName: aws.String(tableName),
@@ -222,8 +229,8 @@ func decreaseCapacity(
 	originalCapacity Throughput,
 ) error {
 	logger.WithFields(logging.Fields{
-		"table":            tableName,
-		"originalCapacity": originalCapacity,
+		"table":             tableName,
+		"original_capacity": originalCapacity.String(),
 	}).Info("decreasing capacity")
 	input := &dynamodb.UpdateTableInput{
 		TableName: aws.String(tableName),
@@ -292,7 +299,7 @@ func waitForTableUpdate(tableName string, dynamo *dynamodb.DynamoDB) error {
 		}
 	}
 	logger.WithFields(logging.Fields{
-		"Table": tableName,
+		"table": tableName,
 	}).Info("Successfully updated table throughput")
 	return nil
 }
@@ -322,7 +329,7 @@ func getCapacity(tableName string, dynamo *dynamodb.DynamoDB) (*Throughput, erro
 	}
 	logger.WithFields(logging.Fields{
 		"table":      tableName,
-		"throughput": throughput,
+		"throughput": throughput.String(),
 	}).Info("fetched provisioned throughput of table")
 	return &throughput, nil
 }
