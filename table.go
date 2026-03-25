@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	MB = 1000000
+	MB                   = 1000000
+	maxSampleItemsToLog  = 3
 )
 
 // Maximum size of a batch can be 25 items
@@ -45,7 +46,7 @@ func (sync *syncState) writeBatch(
 			sampleKeys := make([]string, 0)
 			for _, writeRequests := range output.UnprocessedItems {
 				for idx, req := range writeRequests {
-					if idx < 3 { // Only log first 3 items
+					if idx < maxSampleItemsToLog {
 						if req.PutRequest != nil && req.PutRequest.Item != nil {
 							keyStr := ""
 							for k, v := range req.PutRequest.Item {
