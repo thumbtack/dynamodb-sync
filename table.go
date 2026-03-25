@@ -33,7 +33,7 @@ func (sync *syncState) writeBatch(
 	consumedCapacity := make([]*dynamodb.ConsumedCapacity, 0)
 
 	for len(batch) > 0 {
-		output, _ := sync.dstDynamo.BatchWriteItem(
+		output, err := sync.dstDynamo.BatchWriteItem(
 			&dynamodb.BatchWriteItemInput{
 				RequestItems: batch,
 			})
@@ -41,11 +41,34 @@ func (sync *syncState) writeBatch(
 		consumedCapacity = append(consumedCapacity, output.ConsumedCapacity...)
 
 		if len(output.UnprocessedItems) != 0 {
+			// Get sample keys from unprocessed items for debugging
+			sampleKeys := make([]string, 0)
+			for _, writeRequests := range output.UnprocessedItems {
+				for idx, req := range writeRequests {
+					if idx < 3 { // Only log first 3 items
+						if req.PutRequest != nil && req.PutRequest.Item != nil {
+							keyStr := ""
+							for k, v := range req.PutRequest.Item {
+								if v.S != nil {
+									keyStr += k + "=" + *v.S + " "
+								} else if v.N != nil {
+									keyStr += k + "=" + *v.N + " "
+								}
+							}
+							sampleKeys = append(sampleKeys, keyStr)
+						}
+					}
+				}
+			}
+
 			logger.WithFields(logging.Fields{
 				"Unprocessed Items Size": len(output.UnprocessedItems),
+				"Retry Attempt":          i,
 				"Source Table":           key.sourceTable,
 				"Destination Table":      key.dstTable,
-			}).Debug("Some items failed to be processed")
+				"Error":                  err,
+				"Sample Item Keys":       sampleKeys,
+			}).Warn("Some items failed to be processed")
 			// exponential backoff before retrying
 			backoff(i, "BatchWrite")
 			i++
