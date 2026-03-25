@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	MB                   = 1000000
-	maxSampleItemsToLog  = 3
+	MB                  = 1000000
+	maxSampleItemsToLog = 3
 )
 
 // Maximum size of a batch can be 25 items
