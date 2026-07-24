@@ -26,20 +26,33 @@ func (sync *syncState) writeBatch(
 	key primaryKey, rl *rate.Limiter, reqCapacity float64,
 	writeBatchSize int64) []*dynamodb.ConsumedCapacity {
 	i := 0
-	r := rl.ReserveN(time.Now(), int(reqCapacity))
-	if !r.OK() {
-		r = rl.ReserveN(time.Now(), int(writeBatchSize))
-	}
-	time.Sleep(r.Delay())
 	consumedCapacity := make([]*dynamodb.ConsumedCapacity, 0)
 
 	for len(batch) > 0 {
+		// Throttle to write_qps: reserve the WCU the previous write consumed,
+		// capped at the limiter's burst so ReserveN never exceeds it.
+		reserve := int(reqCapacity)
+		if reserve <= 0 {
+			reserve = int(writeBatchSize)
+		}
+		if reserve > rl.Burst() {
+			reserve = rl.Burst()
+		}
+		time.Sleep(rl.ReserveN(time.Now(), reserve).Delay())
+
 		output, err := sync.dstDynamo.BatchWriteItem(
 			&dynamodb.BatchWriteItemInput{
-				RequestItems: batch,
+				RequestItems:           batch,
+				ReturnConsumedCapacity: aws.String(dynamodb.ReturnConsumedCapacityTotal),
 			})
 
 		consumedCapacity = append(consumedCapacity, output.ConsumedCapacity...)
+		reqCapacity = 0
+		for _, each := range output.ConsumedCapacity {
+			if each != nil && each.CapacityUnits != nil {
+				reqCapacity += *each.CapacityUnits
+			}
+		}
 
 		if len(output.UnprocessedItems) != 0 {
 			// Get sample keys from unprocessed items for debugging
@@ -73,9 +86,8 @@ func (sync *syncState) writeBatch(
 			// exponential backoff before retrying
 			backoff(i, "BatchWrite")
 			i++
-			// Retry writing items that were not processed
-			batch = output.UnprocessedItems
 		}
+		batch = output.UnprocessedItems
 	}
 	return consumedCapacity
 }
@@ -119,7 +131,9 @@ func (sync *syncState) writeTable(
 				consumedCapacity := sync.writeBatch(writeRequest, key, rl, reqCapacity, writeBatchSize)
 				reqCapacity = 0
 				for _, each := range consumedCapacity {
-					reqCapacity += *each.CapacityUnits
+					if each != nil && each.CapacityUnits != nil {
+						reqCapacity += *each.CapacityUnits
+					}
 				}
 
 				writeRequest[dst] = []*dynamodb.WriteRequest{{
