@@ -121,6 +121,13 @@ func (sync *syncState) shardSyncStart(key primaryKey,
 				"Destination Table": key.dstTable,
 			}).Debug("Shard sync, writing records")
 			sync.writeRecords(records.Records, key, shard)
+		} else {
+			// GetRecords returns immediately on an idle shard, so without a
+			// pause this loop polls as fast as the network allows (billions of
+			// billed requests per day across the fleet). AWS recommends about
+			// one poll per second per shard:
+			// https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html
+			time.Sleep(emptyShardPollInterval)
 		}
 		shardIterator = records.NextShardIterator
 	}
