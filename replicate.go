@@ -18,6 +18,7 @@ const (
 	shardEnumerateInterval     = 300 * time.Second
 	shardWaitForParentInterval = 60 * time.Second
 	streamEnableWaitInterval   = 10 * time.Second
+	emptyShardPollInterval     = 1 * time.Second
 	shardIteratorPointer       = "AFTER_SEQUENCE_NUMBER"
 )
 
